@@ -1,6 +1,6 @@
 # BoxBench Skill — 工控算力盒子标准化实测套件
 
-> v1.6.3 ｜ 工具无关 ｜ MIT License
+> v1.6.4 ｜ 工具无关 ｜ MIT License
 > 让任何 AI 编程工具（WorkBuddy / Claude Code / Cursor / Cline…）都能对工控算力盒子做标准化实测，产出统一格式的 HTML 验收报告。
 
 ## 安装
@@ -47,7 +47,7 @@ curl -fsSL https://gitee.com/276635035/boxbench-skill/raw/main/install.sh | bash
 
 > 测这台盒子：IP 192.168.x.x，账号 dev，密码 xxx
 
-Agent 会按 `SKILL.md` 编排执行：硬件指纹 → 环境盘点 → 查平台经验库 → 模型实测（12 项）→ 渲染 HTML 报告 → 回写经验库。
+Agent 会按 `SKILL.md` 编排执行：硬件指纹 → 环境盘点 → 查平台经验库 → 模型实测（C1~C14）→ 渲染 HTML 报告 → 回写经验库。
 
 也可以不用 AI 工具，手动/CI 执行：
 
@@ -82,7 +82,7 @@ python skill\scripts\render_report.py boxbench_results_xxx.json --device "型号
 |---|---|
 | A 硬件指纹 | 芯片/内存/存储/NPU/系统/网络（9 项） |
 | B 环境盘点 | 模型权重/引擎/加速栈/容器/服务（5 项） |
-| C 模型实测 | 加载/解码/TTFT/长上下文/并发2/4/工具调用/多轮/显存/多模态/质量（12 项） |
+| C 模型实测 | 加载/解码/TTFT/长上下文/解码衰减/并发2/4/工具调用/多轮/显存/多模态/质量/上下文阶梯/NPU 算力利用率（C1~C14） |
 | D 容量结论 | 并发建议/场景判定（只写实测，禁止估算） |
 
 ## 目录结构
