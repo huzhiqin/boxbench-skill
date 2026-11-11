@@ -1,6 +1,6 @@
 # BoxBench Skill — 工控算力盒子标准化实测套件
 
-> v1.3.7 ｜ 工具无关 ｜ MIT License
+> v1.6.1 ｜ 工具无关 ｜ MIT License
 > 让任何 AI 编程工具（WorkBuddy / Claude Code / Cursor / Cline…）都能对工控算力盒子做标准化实测，产出统一格式的 HTML 验收报告。
 
 ## 安装
@@ -58,11 +58,19 @@ scp user@device:~/boxbench_results_*.json .
 python3 skill/scripts/render_report.py boxbench_results_xxx.json --device "型号" --model "模型"
 ```
 
-Windows 本机注意：`python3` 换成 `python` 或 `py`；被测设备是 Windows 时 boxbench.sh 无法直接运行（依赖 /proc 等 Linux 工具），按 SKILL.md「被测设备是 Windows 系统时」的路径处理（WSL 或 PowerShell 等价采集）。
+Windows 本机注意：`python3` 换成 `python` 或 `py`；被测设备是 Windows 时 boxbench.sh 无法直接运行（依赖 /proc 等 Linux 工具），直接用 Windows 专用一键采集脚本：
+
+```powershell
+python skill\scripts\boxbench_windows.py --api http://127.0.0.1:1234
+python skill\scripts\render_report.py boxbench_results_xxx.json --device "型号"
+```
+
+脚本自动完成阶段A/B + 阶段C（C2~C12），已内置 Windows 实测踩坑修正（nvidia-smi 读显存、LM Studio 服务探测、思考模型 reasoning_effort=none）。
 
 ## 特性
 
 - **工具无关**：纯 Markdown + Bash + Python3 标准库，零第三方依赖
+- **双平台被测支持**：Linux/工控盒用 `boxbench.sh`，Windows 设备用 `boxbench_windows.py`（LM Studio / llama.cpp / NVIDIA GPU 已验证）
 - **规范驱动**：`SPEC.md` 是测试项/判定标准的唯一权威定义，报告跨设备可比
 - **经验库自进化**：`PLATFORM_NOTES.md` 按引擎×芯片记录已踩坑与可用模型，每测一台设备自动回写，同平台不再重复踩坑
 - **硬件分档**：D1~D5 五档设备档位自动匹配推荐模型清单，跑不动的自动跳过并注明原因
