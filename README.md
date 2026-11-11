@@ -1,6 +1,6 @@
 # BoxBench Skill — 工控算力盒子标准化实测套件
 
-> v1.3.6 ｜ 工具无关 ｜ MIT License
+> v1.3.7 ｜ 工具无关 ｜ MIT License
 > 让任何 AI 编程工具（WorkBuddy / Claude Code / Cursor / Cline…）都能对工控算力盒子做标准化实测，产出统一格式的 HTML 验收报告。
 
 ## 安装
@@ -15,7 +15,7 @@
 
 > 帮我安装这个 skill：https://gitee.com/276635035/boxbench-skill
 
-AI 会自动克隆仓库并把 skill 装到对应 skills 目录。
+AI 会自动克隆仓库并把 skill 装到对应 skills 目录。Windows 上的 AI 工具同样适用（克隆后 skill 文件均为 LF 换行，可直接使用）。
 
 ### 方式二：脚本安装（无 AI 工具 / CI 环境）
 
@@ -29,6 +29,8 @@ curl -fsSL https://gitee.com/276635035/boxbench-skill/raw/main/install.sh | bash
 - 自动探测已安装的 AI 工具（WorkBuddy / Claude Code / Cursor / Continue），装到对应 skills 目录
 - 脚本内置 GitHub → Gitee 双源自动切换（单文件下载失败自动换源）
 - 可用环境变量指定目标：`BOXBENCH_TARGET=~/.claude/skills bash install.sh`
+
+**Windows 用户**：install.sh 是 bash 脚本，需在 **Git Bash**（装 Git for Windows 自带）或 **WSL** 中执行。WorkBuddy 的 skills 目录位于 `%USERPROFILE%\.workbuddy\skills`（Git Bash 中即 `~/.workbuddy/skills`，脚本自动探测）。安装后 boxbench.sh / render_report.py 的使用方式与 macOS/Linux 一致。
 
 ## 升级
 
@@ -56,6 +58,8 @@ scp user@device:~/boxbench_results_*.json .
 python3 skill/scripts/render_report.py boxbench_results_xxx.json --device "型号" --model "模型"
 ```
 
+Windows 本机注意：`python3` 换成 `python` 或 `py`；被测设备是 Windows 时 boxbench.sh 无法直接运行（依赖 /proc 等 Linux 工具），按 SKILL.md「被测设备是 Windows 系统时」的路径处理（WSL 或 PowerShell 等价采集）。
+
 ## 特性
 
 - **工具无关**：纯 Markdown + Bash + Python3 标准库，零第三方依赖
@@ -79,6 +83,7 @@ python3 skill/scripts/render_report.py boxbench_results_xxx.json --device "型�
 boxbench-skill/
 ├── skill/                    # skill 本体（安装时拷入 AI 工具的 skills 目录）
 ├── install.sh                # 脚本安装（可选，AI 安装无需它）
+├── .gitattributes            # 强制脚本 LF 换行（Windows clone 兼容）
 ├── CHANGELOG.md              # 版本历史
 ├── LICENSE                   # MIT
 └── README.md
