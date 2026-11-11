@@ -13,6 +13,13 @@ BoxBench v1.1 报告渲染器 — 工具无关
 """
 import json, sys, os, datetime, html as H, re
 
+# Windows 控制台默认 GBK，print 中文文件名可能抛 UnicodeEncodeError
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 SPEC_VERSION = "1.1"
 
 # 判定基线 (SPEC v1.1 §4.3)
@@ -674,8 +681,12 @@ Chart.defaults.borderColor='#2d3748';const grid={{color:'#21262d'}};
         script = "<script>\nChart.defaults.color='#9aa7b4';Chart.defaults.font.family='-apple-system,Segoe UI,PingFang SC,sans-serif';Chart.defaults.borderColor='#2d3748';\n" + "\n".join(chart_js_parts) + "\n</script>"
         html = html.replace("</body></html>", script + "</body></html>")
 
-    open(out_path, "w", encoding="utf-8").write(html)
-    print(f"OK -> {out_path}")
+    open(out_path, "w", encoding="utf-8", newline="\n").write(html)
+    try:
+        print(f"OK -> {out_path}")
+    except UnicodeEncodeError:
+        # Windows GBK 控制台打不出中文文件名：转为可显示形式输出
+        print(f"OK -> {out_path}".encode("unicode_escape").decode())
 
 if __name__ == "__main__":
     main()
