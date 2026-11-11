@@ -141,6 +141,7 @@ All notable changes to BoxBench Skill will be documented in this file.
 ### Changed
 - CHANGELOG 1.6.4 条目补充变更明细
 
+
 ## [1.6.6] - 2026-11-11
 
 ### Changed
