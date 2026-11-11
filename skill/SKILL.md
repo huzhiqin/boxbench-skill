@@ -1,7 +1,7 @@
 ---
 name: box-bench
 description: 工控算力盒子（AI Box）标准化实测。拿到任何新盒子时触发：自动采集硬件指纹、环境盘点、跑模型实测（解码速度/长上下文/并发/工具调用/多轮），按 SPEC 统一标准产出 HTML 报告。支持预装模型和指定模型下发测试（国内模型聚焦，含模型合规性验证），支持多模型顺序测试与横向对比报告。触发词：测盒子、盒子测试、工控盒实测、AI Box benchmark、设备验收。
-version: 1.3.6
+version: 1.3.7
 ---
 
 # BoxBench — 工控算力盒子标准化实测 Skill
@@ -33,9 +33,12 @@ version: 1.3.6
 向用户确认（或从上下文提取）：设备 IP、SSH 账号、密码/密钥。未给出则询问。
 
 **本机（执行 Agent 的机器）为 Windows 时的注意事项**：
-- Windows 10 1809+ 自带 `ssh`/`scp`（OpenSSH 客户端），PowerShell 直接可用；无 `expect`，密码交互用 `sshpass` 不存在——改用 ssh 秘钥登录，或用 `plink -pw <密码>`（PuTTY 套件），或让用户手动输一次密码
-- 脚本传设备用 `scp`（路径正斜杠）或直接粘贴文件内容到设备终端
-- 渲染器已做编码适配（UTF-8 显式读写），Windows Python 3 直接可跑，无需 chcp
+- Windows 10 1809+ 自带 `ssh`/`scp`（OpenSSH 客户端），PowerShell 直接可用；无 `expect`/`sshpass`，密码交互改用 ssh 密钥登录，或 `plink -pw <密码>`（PuTTY 套件），或让用户手动输一次密码
+- **PowerShell 重定向编码陷阱**：Windows PowerShell 5.1 的 `>` / `Out-File` 默认 UTF-16LE 编码——把脚本内容重定向成文件再传设备会因 BOM/编码导致 bash 报错。正确做法：`Set-Content -Encoding UTF8`（无 BOM 用 `-Encoding utf8NoBOM` 的 pwsh 7）、或用 `curl` 直接从仓库拉 `boxbench.sh` 到设备、或 ssh 后用 heredoc 粘贴。传完在设备上验证：`head -1 boxbench.sh` 应为 `#!/bin/bash` 且无乱码
+- **换行符**：仓库带 `.gitattributes` 强制 LF，正常 git clone 不会出问题；但若经其他渠道（复制粘贴/压缩包）流转，传设备前检查 CRLF：`file boxbench.sh` 或 `grep -c $'\r' boxbench.sh` 应为 0
+- **Python 命令名**：Windows 上通常没有 `python3`，用 `python` 或 `py`（装了 Python Launcher 时）。渲染命令对应改为 `python scripts\render_report.py ...`
+- 渲染器已做编码适配（UTF-8 显式读写 + stdout 自动重配置），Windows Python 3 直接可跑，无需 chcp
+- 路径分隔符：渲染器内部用 `os.path`，Windows 反斜杠路径直接可用；scp 目标路径用正斜杠
 
 **被测设备是 Windows 系统时**：`boxbench.sh` 无法直接运行（bash 脚本依赖 /proc、ps、ss 等 Linux 工具）。处理路径：
 1. 设备有 WSL：进 WSL 执行，部分硬件查询（NPU/加速卡）可能需回退 Windows 侧 PowerShell 命令补采
@@ -75,6 +78,7 @@ bash boxbench.sh multi "模型名|模型文件绝对路径" ["模型名2|路径2
 python3 scripts/render_report.py <result.json> [输出.html] --device <型号> --model <模型名>
 # 多模型（JSON 含 "models" 数组时自动切换多模型报告）：
 python3 scripts/render_report.py <result.json> [输出.html] --device <型号>
+# Windows 本机: python3 换成 python 或 py，路径分隔符正反斜杠均可
 ```
 产出文件名：`{设备型号}_实测报告_{YYYYMMDD}.html`
 
