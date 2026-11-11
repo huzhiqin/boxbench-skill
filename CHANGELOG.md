@@ -123,4 +123,9 @@ All notable changes to BoxBench Skill will be documented in this file.
 ## [1.6.2] - 2026-11-11
 
 ### Changed
+- CHANGELOG 补全 v1.3.8/v1.3.9（Windows 优化线）历史条目；[1.6.1] 为 Windows 融合版主体说明
+
+## [1.6.3] - 2026-11-11
+
+### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
