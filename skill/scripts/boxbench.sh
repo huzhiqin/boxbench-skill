@@ -21,8 +21,8 @@
 #     BOX_PORT      服务端口 (默认 17701)
 # 产出: ./boxbench_results_{YYYYMMDD_HHMMSS}.json (stdout 输出路径)
 # =============================================================
-VERSION="1.3"
-SPEC_VERSION="1.2"
+VERSION="1.5"
+SPEC_VERSION="1.4"
 OUT="boxbench_results_$(date +%Y%m%d_%H%M%S).json"
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT
@@ -33,6 +33,74 @@ ENGINE="${BOX_ENGINE:-/home/dev/houmoAI/houmo/houmo-HLIELLama-xh2/bin/llama-serv
 ENGINE_LIB="${BOX_ENGINE_LIB:-/home/dev/houmoAI/houmo/houmo-HLIELLama-xh2/lib}"
 
 log() { echo "[boxbench] $*" >&2; }
+
+# ---------- NPU/加速卡利用率采样器 ----------
+# 后台进程: 每1s读一次 mthreads-gmi -q (或 nvidia-smi), 追加 "epoch util% mem% temp clk_MHz" 到采样文件
+# 用法: util_start  (启动, $UTILF 为采样文件) ... util_stop  (停止, 打印采样文件路径)
+UTILF=""
+util_reader_available() {
+  command -v mthreads-gmi >/dev/null 2>&1 && return 0
+  command -v nvidia-smi >/dev/null 2>&1 && return 0
+  return 1
+}
+util_start() {
+  util_reader_available || return 1
+  UTILF="$TMPD/util_samples.txt"; : > "$UTILF"
+  (
+    while true; do
+      if command -v mthreads-gmi >/dev/null 2>&1; then
+        LINE=$(mthreads-gmi -q 2>/dev/null | awk '
+          /^ *Gpu:/{gsub(/%/,"");u=($2 ~ /^[0-9.]+$/)?$2:-1}
+          /^ *Memory:/{gsub(/%/,"");m=($2 ~ /^[0-9.]+$/)?$2:-1}
+          /GPU Current Temp/{gsub(/C$/,"");t=($4 ~ /^[0-9.]+$/)?$4:-1}
+          /^ *Graphics:/{clk=($2 ~ /^[0-9]+$/)?$2/1000000:0}
+          END{printf "%.0f %s %s %.0f", u+0, (m==""?-1:m), (t==""?-1:t), clk+0}')
+        # Memory: 行在 Utilization 段外也可能匹配到 % 值; Gpu 为空时放弃该样本
+        [ -z "$(echo "$LINE" | awk '{print $1}')" ] && LINE="-1 -1 -1 0"
+      else
+        LINE=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu,clocks.sm --format=csv,noheader,nounits 2>/dev/null | awk -F', ' '{printf "%s %.0f %s %.0f", $1, ($3>0?$2*100/$3:0), $4, $5}')
+      fi
+      echo "$(date +%s.%N) $LINE" >> "$UTILF"
+      sleep 1
+    done
+  ) &
+  UTIL_PID=$!
+}
+util_stop() {
+  [ -n "$UTIL_PID" ] && kill "$UTIL_PID" 2>/dev/null; wait "$UTIL_PID" 2>/dev/null
+  echo "$UTILF"
+}
+# 汇总一段时间窗的采样 → JSON 片段 {"samples":N,"util_avg":x,"util_peak":y,"mem_pct_avg":z,"temp_max":t}
+# $1=起始epoch $2=结束epoch $3=采样文件 (mem 为显存占用百分比)
+util_summarize() {
+  python3 - "$1" "$2" "$3" << 'PYEOF'
+import sys, json
+t0, t1, path = float(sys.argv[1]), float(sys.argv[2]), sys.argv[3]
+us, ms, ts = [], [], []
+try:
+    for line in open(path):
+        p = line.split()
+        if len(p) < 5: continue
+        t = float(p[0])
+        if t < t0 - 0.5 or t > t1 + 1.5: continue
+        try:
+            u, m, temp = float(p[1]), float(p[2]), float(p[3])
+        except ValueError:
+            continue
+        if u >= 0: us.append(u)
+        if m >= 0: ms.append(m)
+        if temp >= 0: ts.append(temp)
+except FileNotFoundError:
+    pass
+def r(x, n=1): return round(x, n) if x is not None else None
+u_avg = r(sum(us)/len(us)) if us else None
+u_pk  = r(max(us)) if us else None
+m_avg = r(sum(ms)/len(ms)) if ms else None
+t_max = r(max(ts)) if ts else None
+print(json.dumps({"samples": len(us), "util_avg": u_avg, "util_peak": u_pk,
+                  "mem_pct_avg": m_avg, "temp_max": t_max}))
+PYEOF
+}
 
 # ---------- 阶段 A: 硬件指纹 ----------
 phase_fingerprint() {
@@ -114,6 +182,14 @@ phase_collect() {
   {
     echo "{"
     echo "\"api\":\"$API\""
+    # 启动整场采样器: 全程 1s 间隔记录 NPU util/mem/temp, 各测试段按时间窗切分汇总
+    UTIL_START_TS=$(date +%s.%N)
+    util_start
+    # 采样器启动缓冲, 保证空闲基线段有几秒样本
+    sleep 3
+    IDLE_T0=$(date +%s.%N)
+    sleep 4
+    IDLE_T1=$(date +%s.%N)
     # C2: 解码速度(短输入,关思考) — tok/s 以 API usage.completion_tokens 为准(引擎统计口径)
     T0=$(date +%s.%N)
     R1=$(curl -s --max-time 300 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
@@ -127,7 +203,7 @@ try:
     pt=u.get("prompt_tokens",-1); ct=u.get("completion_tokens",-1)
     print("\"prompt_tokens\":%d,\"completion_tokens\":%d"% (pt,ct))
 except Exception:
-    print("\"prompt_tokens\":-1,\"completion_tokens\":-1")'),\"reply_len\":$(echo "$R1" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["choices"][0]["message"].get("content","")))' 2>/dev/null || echo -1)}"
+    print("\"prompt_tokens\":-1,\"completion_tokens\":-1")'),\"reply_len\":$(echo "$R1" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["choices"][0]["message"].get("content","")))' 2>/dev/null || echo -1),\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
     # C4/C5: 长上下文
     python3 - > "$TMPD/long.json" << 'PYEOF'
 import json
@@ -137,7 +213,8 @@ PYEOF
     T0=$(date +%s.%N)
     curl -s --max-time 380 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d @"$TMPD/long.json" > "$TMPD/longr.json"
     T1=$(date +%s.%N)
-    echo ",\"c4_long_ctx\":{\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"ok\":$(python3 -c 'import json; d=json.load(open("'$TMPD'/longr.json")); print(1 if d["choices"][0]["message"]["content"] else 0)' 2>/dev/null || echo -1),\"prompt_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("prompt_tokens",-1))' 2>/dev/null || echo -1),\"completion_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("completion_tokens",-1))' 2>/dev/null || echo -1)}"
+    echo ",\"c4_long_ctx\":{\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"ok\":$(python3 -c 'import json; d=json.load(open("'$TMPD'/longr.json")); print(1 if d["choices"][0]["message"]["content"] else 0)' 2>/dev/null || echo -1),\"prompt_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("prompt_tokens",-1))' 2>/dev/null || echo -1),\"completion_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("completion_tokens",-1))' 2>/dev/null || echo -1),\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
+    echo ",\"idle_baseline\":$(util_summarize "$IDLE_T0" "$IDLE_T1" "$UTILF")"
     # C6/C7: 并发 2/4
     for N in 2 4; do
       T0=$(date +%s.%N)
@@ -156,7 +233,7 @@ PYEOF
           [ "$T" -gt 0 ] 2>/dev/null && CTOK=$((CTOK+T))
         fi
       done
-      echo ",\"c6c7_conc${N}\":{\"ok\":$OKN,\"total\":$N,\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"completion_tokens\":$CTOK}"
+      echo ",\"c6c7_conc${N}\":{\"ok\":$OKN,\"total\":$N,\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"completion_tokens\":$CTOK,\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
     done
     # C8: 工具调用
     TR=$(curl -s --max-time 100 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
@@ -193,6 +270,18 @@ except Exception:
 open("'$TMPD'/c12.txt","w").write(c[:80])' 2>/dev/null || : > "$TMPD/c12.txt"
     python3 -c 'import json; open("'$TMPD'/c12j.txt","w").write(json.dumps(open("'$TMPD'/c12.txt").read()))' 2>/dev/null || echo -n '""' > "$TMPD/c12j.txt"
     echo ",\"c12_sample\":$(cat $TMPD/c12j.txt)"
+    # 停采样器 + 全场综合利用率(空闲基线之后到测试结束)
+    UTIL_END_TS=$(date +%s.%N)
+    UTILF=$(util_stop)
+    echo ",\"util_overall\":$(util_summarize "$IDLE_T1" "$UTIL_END_TS" "$UTILF")"
+    # 温度峰值单独留 (全场含空闲)
+    echo ",\"session_temp_max\":$(python3 -c "
+import json
+try:
+    us=[l.split() for l in open('$UTILF')]
+    ts=[float(p[3]) for p in us if len(p)>=4 and float(p[3])>=0]
+    print(max(ts) if ts else -1)
+except Exception: print(-1)")"
     echo "}"
   } > "$TMPD/phasec_fragment.json"
 }
@@ -210,12 +299,13 @@ stop_model_service() {
 }
 
 start_model_service() {
-  # $1 = 模型文件绝对路径
+  # $1 = 模型文件绝对路径; $2 = ctx-size (默认 8192)
   local MODEL_PATH="$1"
+  local SCTX="${2:-8192}"
   export LD_LIBRARY_PATH="$ENGINE_LIB:$LD_LIBRARY_PATH"
-  log "启动服务: $MODEL_PATH (端口 $PORT)"
+  log "启动服务: $MODEL_PATH (端口 $PORT, ctx=$SCTX)"
   setsid "$ENGINE" -m "$MODEL_PATH" -dev 0 -ngl 999 \
-    --host 0.0.0.0 --port "$PORT" --jinja --ctx-size 8192 \
+    --host 0.0.0.0 --port "$PORT" --jinja --ctx-size "$SCTX" \
     > /tmp/boxbench_server_$PORT.log 2>&1 < /dev/null &
   # 等待 /health 就绪 (最多300s, 每5s探测)
   local T0=$(date +%s)
@@ -323,9 +413,9 @@ precheck_resources() {
   local MPATH="$1"
   local FSIZE_MB=$(du -m "$MPATH" 2>/dev/null | cut -f1)
   local DISK_AVAIL_MB=$(df -m / | awk 'NR==2{print $4}')
-  # 模型加载需要文件本身落盘 + 加载到推理内存。磁盘余量 < 文件大小 + 2GB 缓冲 → 磁盘不足
-  if [ "$DISK_AVAIL_MB" -lt $(( FSIZE_MB + 2048 )) ] 2>/dev/null; then
-    echo "disk_short:需要~$(( FSIZE_MB/1024 ))GB,磁盘可用$(( DISK_AVAIL_MB/1024 ))GB"
+  # 磁盘预检只针对"还需下载/拷贝"的场景: 模型文件已在盘上时不占用额外磁盘, 只留 2GB 运行缓冲
+  if [ "$DISK_AVAIL_MB" -lt 2048 ] 2>/dev/null; then
+    echo "disk_short:需~2GB运行缓冲,磁盘可用$(( DISK_AVAIL_MB/1024 ))GB"
     return 1
   fi
   # 内存: W4A8/AWQ 量化权重 ≈ 文件大小×1.15(权重+KV/激活开销), 需 < 推理内存
@@ -390,10 +480,102 @@ phase_multi() {
   [ $FIRST -eq 0 ] && echo "]"
 }
 
+# ---------- ctxtest: 上下文阶梯测试 (验证模型标称窗口) ----------
+# 用法: boxbench.sh ctxtest "模型名|模型路径" ["32k,128k,max"]
+# 阶梯默认 32k,128k,max(模型自报上限); 每档: 重启服务(ctx=档位) →
+# 构造 ~55% 窗口长输入(内嵌暗号 CTXPROBE-XXXX) → prefill速度+暗号召回+显存
+# 目的: 8K ctx 的 C1~C12 不涉及大窗口; 标称 128K/256K 是否真实、显存涨多少, 由本测试回答
+phase_ctxtest() {
+  shift  # 跳过 "ctxtest"
+  local SPEC="$1"; local LADDER="${2:-32k,128k,max}"
+  MNAME="${SPEC%%|*}"; MPATH="${SPEC#*|}"
+  if [ ! -f "$MPATH" ]; then
+    echo "{\"error\":\"file_not_found\",\"name\":\"$MNAME\"}"; return
+  fi
+  # 模型自报窗口上限 (从运行服务的 /props 取; 先用 8192 起服务探一次)
+  stop_model_service
+  local LOAD_S=$(start_model_service "$MPATH" 8192)
+  if [ "$LOAD_S" = "-1" ]; then
+    echo "{\"error\":\"service_start_failed\",\"name\":\"$MNAME\"}"; return
+  fi
+  local MAXCTX
+  MAXCTX=$(curl -s --max-time 5 "$API/props" 2>/dev/null | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(d.get("default_generation_settings",{}).get("n_ctx") or 0)
+except Exception: print(0)')
+  [ -z "$MAXCTX" ] || [ "$MAXCTX" = "0" ] && MAXCTX=8192
+  log "模型自报窗口上限: $MAXCTX"
+
+  local FIRST=1
+  echo "{\"name\":\"$MNAME\",\"path\":\"$MPATH\",\"claimed_max_ctx\":$MAXCTX,\"levels\":["
+  IFS=',' read -ra LEVELS <<< "$LADDER"
+  for L in "${LEVELS[@]}"; do
+    # 解析档位: 32k→32768; max→模型自报上限; 超上限截断为上限
+    local N
+    if [ "$L" = "max" ]; then N=$MAXCTX
+    else N=$((${L%k} * 1024)); fi
+    [ "$N" -gt "$MAXCTX" ] && { log "档位 ${L} 超模型上限, 截断为 $MAXCTX"; N=$MAXCTX; }
+    # 去重: 与 max 相同的截断档跳过
+    local DUP=0
+    if [ "$L" != "max" ] && [ "$N" = "$MAXCTX" ] && echo " ${LEVELS[*]} " | grep -q " max "; then DUP=1; fi
+    [ "$DUP" = "1" ] && continue
+    log "===== ctx 阶梯: $L ($N) ====="
+    stop_model_service
+    local LS=$(start_model_service "$MPATH" "$N")
+    if [ "$LS" = "-1" ]; then
+      [ $FIRST -eq 1 ] && FIRST=0 || echo ","
+      echo "{\"level\":\"$L\",\"ctx\":$N,\"error\":\"service_start_failed\"}"
+      continue
+    fi
+    # 构造 ~55% 窗口长输入, 头部埋暗号 CTXPROBE-<4位>
+    local TOKEN=$(( (N * 55 / 100) ))
+    local SECRET="CTXPROBE-$(head -c4 /dev/urandom | od -An -tx4 | tr -d ' \n' | cut -c1-4)"
+    python3 - "$TOKEN" "$SECRET" > "$TMPD/ctxreq.json" << 'PYEOF'
+import json, sys
+ntok = int(sys.argv[1]); secret = sys.argv[2]
+# 每段约 18 汉字 ≈ 18 token (中文近似 1字1token)
+para = "工业互联网平台通过边缘计算节点实时采集产线传感器数据，"
+reps = max(1, ntok // 18)
+content = f"重要暗号：{secret}。请记住。" + para * reps + "我刚才给你的重要暗号是什么？只回答暗号本身。"
+open('/dev/stdout','w').write(json.dumps({"messages":[{"role":"user","content":content}],"max_tokens":32,"stream":False,"chat_template_kwargs":{"enable_thinking":False}))
+PYEOF
+    local T0=$(date +%s.%N)
+    curl -s --max-time 580 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d @"$TMPD/ctxreq.json" > "$TMPD/ctxr.json"
+    local T1=$(date +%s.%N)
+    # 结果解析: prefill tok/s + 暗号召回 + usage
+    local RES
+    RES=$(python3 -c "
+import json
+try:
+    d=json.load(open('$TMPD/ctxr.json')); u=d.get('usage',{})
+    pt=u.get('prompt_tokens',-1); ct=u.get('completion_tokens',-1)
+    ans=d['choices'][0]['message'].get('content','')
+    hit=1 if '$SECRET' in ans else 0
+    import sys
+    print('{\"prompt_tokens\":%d,\"completion_tokens\":%d,\"secret_hit\":%d,\"answer\":%s}' % (pt,ct,hit,json.dumps(ans[:60],ensure_ascii=False)))
+except Exception as e:
+    print('{\"error\":\"%s\"}' % str(e)[:60])
+" 2>/dev/null || echo '{"error":"parse_failed"}')
+    # 显存读数
+    local VMEM
+    VMEM=$(mthreads-gmi 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && NF>4 {print $5; exit}')
+    [ -z "$VMEM" ] && VMEM=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader 2>/dev/null | head -1)
+    [ $FIRST -eq 1 ] && FIRST=0 || echo ","
+    echo "{\"level\":\"$L\",\"ctx\":$N,\"load_s\":$LS,\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"vram\":\"$VMEM\",\"result\":$RES}"
+  done
+  echo "]"
+  stop_model_service
+}
+
 # ---------- 主流程 ----------
 MODE="${1:-auto}"
 if [ "$MODE" = "classify" ]; then
   phase_classify
+elif [ "$MODE" = "ctxtest" ]; then
+  # 纯 C13 测试: 直接输出 (不套 phase_a/b)
+  echo "{\"boxbench_version\":\"$VERSION\",\"spec_version\":\"$SPEC_VERSION\",\"timestamp\":\"$(date -Iseconds)\",\"ctxtest\":$(phase_ctxtest "$@")}"
 else
   phase_fingerprint
   phase_inventory
