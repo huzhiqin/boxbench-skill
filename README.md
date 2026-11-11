@@ -1,6 +1,6 @@
 # BoxBench Skill — 工控算力盒子标准化实测套件
 
-​> v1.6.5 ｜ 工具无关 ｜ MIT License
+> v1.6.7 ｜ 工具无关 ｜ MIT License
 > 让任何 AI 编程工具（WorkBuddy / Claude Code / Cursor / Cline…）都能对工控算力盒子做标准化实测，产出统一格式的 HTML 验收报告。
 
 ## 安装
