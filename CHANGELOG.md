@@ -29,3 +29,8 @@ All notable changes to BoxBench Skill will be documented in this file.
 - 初版：SPEC.md 规范 + boxbench.sh 采集脚本 + render_report.py 渲染器
 - 阶段A 硬件指纹（9 项）/ 阶段B 环境盘点（5 项）/ 阶段C 模型实测（12 项）/ 阶段D 容量结论
 - 基线数据校准自 ZYSJ-E300K（Qwen3.6-35B v1.5.0：24.0 tok/s，4 路并发）
+
+## [1.3.1] - 2026-11-11
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
