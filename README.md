@@ -1,15 +1,33 @@
 # BoxBench Skill — 工控算力盒子标准化实测套件
 
-> v1.3.5 ｜ 工具无关 ｜ MIT License
+> v1.3.6 ｜ 工具无关 ｜ MIT License
 > 让任何 AI 编程工具（WorkBuddy / Claude Code / Cursor / Cline…）都能对工控算力盒子做标准化实测，产出统一格式的 HTML 验收报告。
 
-## 一键安装
+## 安装
+
+### 方式一：直接把仓库丢给 AI 工具（推荐）
+
+对任何 AI 编程工具（WorkBuddy / Claude Code / Cursor / Cline…）说：
+
+> 帮我安装这个 skill：https://github.com/huzhiqin/boxbench-skill （克隆仓库，把 skill/ 目录作为 skill 安装）
+
+国内网络访问 GitHub 困难时，用 Gitee 镜像：
+
+> 帮我安装这个 skill：https://gitee.com/276635035/boxbench-skill
+
+AI 会自动克隆仓库并把 skill 装到对应 skills 目录。
+
+### 方式二：脚本安装（无 AI 工具 / CI 环境）
 
 ```bash
+# GitHub
 curl -fsSL https://raw.githubusercontent.com/huzhiqin/boxbench-skill/main/install.sh | bash
+# 国内网络（Gitee 源）
+curl -fsSL https://gitee.com/276635035/boxbench-skill/raw/main/install.sh | bash
 ```
 
 - 自动探测已安装的 AI 工具（WorkBuddy / Claude Code / Cursor / Continue），装到对应 skills 目录
+- 脚本内置 GitHub → Gitee 双源自动切换（单文件下载失败自动换源）
 - 可用环境变量指定目标：`BOXBENCH_TARGET=~/.claude/skills bash install.sh`
 
 ## 升级
@@ -19,6 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/huzhiqin/boxbench-skill/main/instal
 ```
 
 升级前自动对比本地与远端版本号，已是最新则跳过。版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+本仓库 GitHub 与 Gitee 双平台同步发布，任一源拉到的版本一致。
 
 ## 使用
 
@@ -58,8 +77,8 @@ python3 skill/scripts/render_report.py boxbench_results_xxx.json --device "型�
 
 ```
 boxbench-skill/
-├── skill/box-bench/          # skill 本体（安装时拷入 AI 工具的 skills 目录）
-├── install.sh                # 一键安装/升级
+├── skill/                    # skill 本体（安装时拷入 AI 工具的 skills 目录）
+├── install.sh                # 脚本安装（可选，AI 安装无需它）
 ├── CHANGELOG.md              # 版本历史
 ├── LICENSE                   # MIT
 └── README.md
