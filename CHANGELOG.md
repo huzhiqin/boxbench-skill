@@ -60,7 +60,7 @@ All notable changes to BoxBench Skill will be documented in this file.
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
 
-## [1.6.0] - 2026-11-11
+## [1.6.1] - 2026-11-11
 
 ### Added
 - **合并 Windows 实测优化线（v1.3.8/v1.3.9）到主线**：本版本起单一分支同时覆盖 Linux 工控盒与 Windows 设备两类被测平台
@@ -120,7 +120,7 @@ All notable changes to BoxBench Skill will be documented in this file.
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
 
-## [1.6.1] - 2026-11-11
+## [1.6.2] - 2026-11-11
 
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
