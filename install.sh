@@ -27,10 +27,11 @@ source_url() { # $1=source $2=文件相对路径 -> 输出 URL
 
 # 取单个文件：依次尝试各源，连接 5s 超时、总 30s 超时
 fetch() { # $1=相对路径 $2=目标路径
-  local rel="$1" dest="$2"
+  local rel="$1" dest="$2" src_dir=""
   # 本地仓库场景：同目录存在该文件则直接用（git clone 后 bash install.sh）
-  if [[ -f "$(dirname "${BASH_SOURCE[0]}")/skill/${rel}" ]]; then
-    cp "$(dirname "${BASH_SOURCE[0]}")/skill/${rel}" "$dest"; return 0
+  src_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-}" 2>/dev/null)" 2>/dev/null && pwd)" || src_dir=""
+  if [[ -n "$src_dir" && -f "${src_dir}/skill/${rel}" ]]; then
+    cp "${src_dir}/skill/${rel}" "$dest"; return 0
   fi
   if [[ -f "skill/${rel}" ]]; then
     cp "skill/${rel}" "$dest"; return 0
@@ -134,7 +135,7 @@ SRC_DIR="$(cd "$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "\${SRC_DIR}/../../boxbench-skill/install.sh" ]]; then
   exec bash "\${SRC_DIR}/../../boxbench-skill/install.sh"
 fi
-for BASE in "https://raw.githubusercontent.com/${huzhiqin}/${REPO_NAME}/${BRANCH}" "https://gitee.com/${huzhiqin}/${REPO_NAME}/raw/${BRANCH}"; do
+for BASE in "https://raw.githubusercontent.com/huzhiqin/${REPO_NAME}/${BRANCH}" "https://gitee.com/huzhiqin/${REPO_NAME}/raw/${BRANCH}"; do
   if curl -fsSL --connect-timeout 5 --max-time 30 "\${BASE}/install.sh" -o /tmp/boxbench-install.sh 2>/dev/null && [ -s /tmp/boxbench-install.sh ]; then
     exec bash /tmp/boxbench-install.sh
   fi
