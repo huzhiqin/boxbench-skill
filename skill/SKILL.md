@@ -1,7 +1,7 @@
 ---
 name: box-bench
 description: 工控算力盒子（AI Box）标准化实测。拿到任何新盒子时触发：自动采集硬件指纹、环境盘点、跑模型实测（解码速度/长上下文/并发/工具调用/多轮），按 SPEC 统一标准产出 HTML 报告。支持预装模型和指定模型下发测试（国内模型聚焦，含模型合规性验证），支持多模型顺序测试与横向对比报告。触发词：测盒子、盒子测试、工控盒实测、AI Box benchmark、设备验收。
-version: 1.3.7
+version: 1.6.1
 ---
 
 # BoxBench — 工控算力盒子标准化实测 Skill
@@ -15,8 +15,9 @@ version: 1.3.7
 | 文件 | 用途 |
 |---|---|
 | `SPEC.md` | 测试规范 v1.2 — 测试项/判定标准/流程的**唯一权威定义，先通读** || `PLATFORM_NOTES.md` | **引擎×芯片经验库（测前必查，测后必回写）** — 同平台坑/规则/可用模型直接复用 |
-| `scripts/boxbench.sh` | 设备端采集脚本（阶段A/B 自动 + 阶段C 自动 + multi 多模型） |
-| `scripts/render_report.py` | 报告渲染器（纯 Python3 标准库，无第三方依赖） |
+| `scripts/boxbench.sh` | 设备端采集脚本（阶段A/B 自动 + 阶段C 自动 + multi 多模型 + C13 上下文阶梯） |
+| `scripts/boxbench_windows.py` | **被测设备为 Windows** 的等价一键脚本（阶段A/B/classify + 阶段C C2~C12 + C5 流式分段 + GPU 运行时采样，PowerShell + Python 标准库零依赖，产出与 boxbench.sh 同结构 JSON） |
+| `scripts/render_report.py` | 报告渲染器（纯 Python3 标准库，无第三方依赖；Windows 兼容：反斜杠路径/GBK 控制台/无 NPU 标称值回退实测卡） |
 | `scripts/vendor/chart.umd.min.js` | Chart.js 4.4.1（201K）——渲染器自动内嵌进报告，**随 skill 整体分发/拷贝时必须带上 scripts/ 目录**；vendor 丢失时渲染器自动降级 CDN（需联网） |
 
 ## 执行流程
@@ -40,9 +41,9 @@ version: 1.3.7
 - 渲染器已做编码适配（UTF-8 显式读写 + stdout 自动重配置），Windows Python 3 直接可跑，无需 chcp
 - 路径分隔符：渲染器内部用 `os.path`，Windows 反斜杠路径直接可用；scp 目标路径用正斜杠
 
-**被测设备是 Windows 系统时**：`boxbench.sh` 无法直接运行（bash 脚本依赖 /proc、ps、ss 等 Linux 工具）。处理路径：
-1. 设备有 WSL：进 WSL 执行，部分硬件查询（NPU/加速卡）可能需回退 Windows 侧 PowerShell 命令补采
-2. 无 WSL：Agent 手动采集——阶段A/B 用 PowerShell 等价命令（`Get-CimInstance` 查硬件、`nvidia-smi`/`mthreads-gmi` 查加速卡、`netstat` 查端口），阶段C 的 API 测试（curl/python）不受系统影响，逐项写入 JSON 后照常渲染报告
+**被测设备是 Windows 系统时**：`boxbench.sh` 无法直接运行（bash 脚本依赖 /proc、lscpu、free、ss 等 Linux 工具）。处理路径：
+1. 设备有 WSL：进 WSL 执行 boxbench.sh，部分硬件查询（NPU/加速卡）可能需回退 Windows 侧 PowerShell 命令补采
+2. 无 WSL（v1.3.8 起推荐）：直接运行一键脚本 `python scripts/boxbench_windows.py [--api URL] [--model NAME] [--thinking none|keep] [--all]`——自动完成阶段A/B/classify + 阶段C（C2~C12），产出与 boxbench.sh 同结构 JSON，交给 render_report.py 照常渲染。脚本已内置 Windows 实测踩坑修正（显存必须用 nvidia-smi 读、LM Studio 无 /health 用 /v1/models 探测、思考模型用 reasoning_effort=none 关闭思考），平台细节见 PLATFORM_NOTES.md。C5 采用流式同请求分段实测（prefill/decode 分离），并全程 nvidia-smi 采样 GPU 利用率/功耗/温度（runtime_metrics），另采集 A7 GPU 温度、A9 TDP、B3 CUDA/驱动栈
 3. 报告"部署环境"行如实标注 Windows 版本；引擎经验库照常回写（标注 OS）
 
 ### 第 1.5 步：硬件分档 + 模型清单匹配（自动）
@@ -60,9 +61,15 @@ bash boxbench.sh            # 自动模式：指纹+盘点+（服务就绪则）
 bash boxbench.sh collect     # 单模型补采（服务已启动）
 bash boxbench.sh multi "模型名|模型文件绝对路径" ["模型名2|路径2" ...]
                             # 多模型顺序测试：自动停旧服务→起新服务(计时C1)→C2~C12→停服务→下一个
+bash boxbench.sh ctxtest "模型名|模型文件绝对路径" ["32k,128k,max"]
+                            # C13 上下文阶梯验证（可选）：验证模型标称大窗口是否真实可用。
+                            # 每档以该窗口重启服务→塞 ~55% 窗口文本(头部埋随机暗号)→记录
+                            # prefill 速度+暗号召回+显存。C1~C12 在 8K ctx 下测，
+                            # 标称 128K/256K 窗口的能力只能由 C13 回答，验收大窗口模型必跑。
 ```
 - `multi` 模式下 boxbench.sh 自动管理服务生命周期：每模型启动前做**资源预检**（磁盘可用 < 文件+2GB → `⏭ 磁盘空间不足，暂未测试`；权重×1.15 > 推理内存 → `⏭ 内存不足，暂未测试`，均跳过并在报告列出原因），通过后自动起服务计时（C1）→ 跑阶段C → 停服务换下一个。
 - 速度口径（v1.2 起）：C2/C4/并发 均记录 API `usage.prompt_tokens/completion_tokens`，解码速度 = completion_tokens/耗时（**tok/s，usage 口径**）；旧数据自动降级"估算（字/s）"并标注。
+- **NPU 算力利用率（v1.5 起，自动）**：阶段C 全程 1s 间隔采样加速卡（mthreads-gmi -q / nvidia-smi），按 空闲基线/C2解码/C4 prefill/并发/全场 分段汇总利用率均值/峰值/显存%/温度峰值。判读口径：解码段利用率低 = 访存受限（LLM 共性，正常）；**prefill 段利用率 = 计算密集段真实算力发挥**。报告自动出"算力利用率分析"章节。无采样能力设备（无管理工具）自动跳过，不影响其他测试。
 - 环境变量可覆盖默认路径：`BOX_API`（默认 http://127.0.0.1:17701）、`BOX_ENGINE`（llama-server 路径）、`BOX_ENGINE_LIB`、`BOX_PORT`。
 - 设备上模型服务**未启动**时：阶段C 自动跳过。此时按用户需求决定是否启动服务，启动后运行 `bash boxbench.sh collect` 补采。
 
@@ -90,6 +97,7 @@ python3 scripts/render_report.py <result.json> [输出.html] --device <型号>
 - C1 冷启动加载耗时（Agent 自己在启动服务时计时）
 - C11 多模态（有 mmproj 时手动测）
 - C12 输出质量人工抽查评语
+- **C13 上下文阶梯**（模型标称窗口 > 32K 时建议跑 `ctxtest`，JSON 含 `ctxtest` 字段时渲染器自动出"上下文阶梯验证"章节并更新结论行长上下文能力）
 - 阶段D 容量结论（**必须基于实测数据推导，禁止估算**）
 将补充项以编辑方式并入 HTML（保持四段式结构与样式不变）。
 
