@@ -63,7 +63,7 @@ util_start() {
       echo "$(date +%s.%N) $LINE" >> "$UTILF"
       sleep 1
     done
-  ) &
+  ) > /dev/null 2>&1 &
   UTIL_PID=$!
 }
 util_stop() {
@@ -218,12 +218,14 @@ PYEOF
     # C6/C7: 并发 2/4
     for N in 2 4; do
       T0=$(date +%s.%N)
+      CUR_PIDS=""
       for i in $(seq 1 $N); do
         curl -s --max-time 380 "$API/v1/chat/completions" -H 'Content-Type: application/json' \
           -d "{\"messages\":[{\"role\":\"user\",\"content\":\"请写200字短文，主题编号${i}：介绍一项工业技术\"}],\"max_tokens\":200,\"stream\":false,\"chat_template_kwargs\":{\"enable_thinking\":false}}" \
           -o "$TMPD/par_${i}.json" &
+        CUR_PIDS="$CUR_PIDS $!"
       done
-      wait
+      wait $CUR_PIDS
       T1=$(date +%s.%N)
       OKN=0; CTOK=0
       for i in $(seq 1 $N); do
