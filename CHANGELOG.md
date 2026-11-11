@@ -143,7 +143,3 @@ All notable changes to BoxBench Skill will be documented in this file.
 - boxbench.sh: NPU 利用率后台采样静默输出、并发 wait 改精确 PID 等待（含 1.6.4 主体内容）
 
 
-## [1.6.6] - 2026-11-11
-
-### Changed
-- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
