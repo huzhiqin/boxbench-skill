@@ -2,11 +2,12 @@
 # BoxBench Skill 一键安装 / 升级（GitHub + Gitee 双源，自动切换）
 # 用法:
 #   curl -fsSL https://raw.githubusercontent.com/huzhiqin/boxbench-skill/main/install.sh | bash
-#   国内网络差时: curl -fsSL https://gitee.com/huzhiqin/boxbench-skill/raw/main/install.sh | bash
+#   国内网络差时: curl -fsSL https://gitee.com/276635035/boxbench-skill/raw/main/install.sh | bash
 #   或: git clone 后 bash install.sh（本地文件优先，不联网）
 set -uo pipefail
 
 OWNER="huzhiqin"
+GITEE_OWNER="276635035"
 REPO_NAME="boxbench-skill"
 BRANCH="main"
 # 源列表：按顺序尝试，环境变量 BOXBENCH_SOURCE=gitee/github 可强制指定
@@ -19,7 +20,7 @@ fi
 source_url() { # $1=source $2=文件相对路径 -> 输出 URL
   case "$1" in
     github) echo "https://raw.githubusercontent.com/${OWNER}/${REPO_NAME}/${BRANCH}/skill/$2" ;;
-    gitee)  echo "https://gitee.com/${OWNER}/${REPO_NAME}/raw/${BRANCH}/skill/$2" ;;
+    gitee)  echo "https://gitee.com/${GITEE_OWNER}/${REPO_NAME}/raw/${BRANCH}/skill/$2" ;;
     *)      return 1 ;;
   esac
 }
@@ -129,7 +130,7 @@ SRC_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "\${SRC_DIR}/../../boxbench-skill/install.sh" ]]; then
   exec bash "\${SRC_DIR}/../../boxbench-skill/install.sh"
 fi
-for BASE in "https://raw.githubusercontent.com/${OWNER}/${REPO_NAME}/${BRANCH}" "https://gitee.com/${OWNER}/${REPO_NAME}/raw/${BRANCH}"; do
+for BASE in "https://raw.githubusercontent.com/${OWNER}/${REPO_NAME}/${BRANCH}" "https://gitee.com/${GITEE_OWNER}/${REPO_NAME}/raw/${BRANCH}"; do
   if curl -fsSL --connect-timeout 5 --max-time 30 "\${BASE}/install.sh" -o /tmp/boxbench-install.sh 2>/dev/null && [ -s /tmp/boxbench-install.sh ]; then
     exec bash /tmp/boxbench-install.sh
   fi
