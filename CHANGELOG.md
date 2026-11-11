@@ -133,4 +133,10 @@ All notable changes to BoxBench Skill will be documented in this file.
 ## [1.6.4] - 2026-11-11
 
 ### Changed
+- README 双份梳理：skill/README.md 修正 SPEC 版本误标（1.6.3→1.4）、架构图与目录结构补 boxbench_windows.py/PLATFORM_NOTES/HARDWARE_MODEL_MATRIX/vendor、旧目录名 box-bench/ 更正为 skill/、阶段C 更新为 C1~C14、快速开始补 Windows 采集路径、移除过时的"4 个文件 <30KB"；主 README 测试范围同步 C1~C14
+- boxbench.sh: NPU 利用率后台采样静默输出、并发 wait 改精确 PID 等待
+
+## [1.6.5] - 2026-11-11
+
+### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
