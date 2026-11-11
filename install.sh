@@ -4,6 +4,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/huzhiqin/boxbench-skill/main/install.sh | bash
 #   国内网络差时: curl -fsSL https://gitee.com/276635035/boxbench-skill/raw/main/install.sh | bash
 #   或: git clone 后 bash install.sh（本地文件优先，不联网）
+# Windows 用户: 需 Git Bash（装 Git for Windows 自带）或 WSL，在其中执行本脚本。
+#   仓库 .gitattributes 已强制脚本文件 LF，git clone 得到的 .sh 可直接运行；
+#   目标 skills 目录自动指向 %USERPROFILE%\.workbuddy\skills 等对应位置。
 set -uo pipefail
 
 OWNER="huzhiqin"
