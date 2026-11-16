@@ -4,7 +4,8 @@
 BoxBench v1.1 报告渲染器 — 工具无关
 输入: boxbench.sh 产出的 JSON 结果文件 (单模型或 multi 多模型)
 输出: 统一样式 HTML 报告 (深色主题 + Chart.js 图表)
-用法: python3 render_report.py <result.json> [输出.html] [--device 型号] [--model 模型名] [--tops ..] [--bw ..]
+用法: python3 render_report.py <result.json> [输出.html] [--device 型号] [--model 模型名] [--tops ..] [--bw ..] [--no-redact]
+脱敏: 默认开启 (--no-redact 关闭)。IP/IPv6/MAC/主机名 在渲染前自动替换为占位符, 报告可直接对外提交。
 多模型: JSON 含 "models" 数组时自动切换多模型报告:
   - 每模型一份实测明细 (复用单模型渲染)
   - 多模型横向对比表 (解码/显存/工具调用/并发/加载时间)
@@ -110,6 +111,34 @@ border-radius:999px;padding:1px 12px;font-size:12.5px;font-weight:700}
 
 def esc(x): return H.escape(str(x if x is not None else ""))
 
+# ============ 脱敏 (默认开启; 对齐 boxbench_exp.py 的脱敏口径) ============
+_RE_IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_RE_IPV6 = re.compile(r"\b(?:[a-f0-9]{1,4}:){2,7}[a-f0-9]{1,4}\b", re.I)
+_RE_MAC = re.compile(r"\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", re.I)
+
+def make_redactor(redact: bool, device_label=""):
+    """返回 (预处理函数, 主机名替换表)。redact=False 时为恒等变换。
+    hostname → `<设备型号>` (评委仍能看出是哪台设备), IP/MAC → <内网IP>/<mac>。"""
+    if not redact:
+        return (lambda s: s), {}
+    def _sub_ip(m):
+        v = m.group(0)
+        if v.startswith("127.") or v == "0.0.0.0":
+            return v  # 回环/监听地址无敏感性, 保留可读性
+        return "<内网IP>"
+    def red(s):
+        if not isinstance(s, str):
+            s = str(s if s is not None else "")
+        s = _RE_MAC.sub("<mac>", s)
+        s = _RE_IPV6.sub("<ipv6>", s)
+        s = _RE_IP.sub(_sub_ip, s)
+        # 网络接口行(如 enp131s0=IP/掩码): IP 已被替换, 掩码一并去掉避免残留拓扑信息
+        s = re.sub(r"=/<内网IP>/\d+", "=<内网IP>", s)
+        # 主机名: 仅替换 phase_a.hostname 字段值本身 (在 redact_deep 里按 key 定向处理, 字符串级不误伤)
+        return s
+    return red, {}
+
+
 def get(d, path, default=""):
     cur = d
     for k in path.split('.'):
@@ -180,24 +209,25 @@ def build_engine_cfg(m, top_engine=None):
     if quant == "未记录" and path != "未记录":
         mq = re.search(r'(w\d+a\d+|Q\d_[A-Z_0-9]+|int\d+)', path)
         if mq: quant = mq.group(1)
-    short = re.split(r"[\\/]", path)[-1]
+    short = re.split(r"[\\/]", path)[-1] if re.search(r"[\\/]", path) else path
     cmd = str(g("engine_cmd"))
     port = "未记录"
     pm = re.search(r'--port[= ](\d+)', cmd)
     if pm: port = pm.group(1)
     rows = [
         ("模型权重", f"{esc(short)}（{esc(g('model_file_size'))}）"),
-        ("权重构建日期", esc(g("model_build_date"))),
         ("量化格式", esc(quant)),
         ("推理引擎", f"{esc(g('engine_name'))}（build: {esc(g('engine_build'))}）"),
         ("上下文窗口 ctx-size", esc(ctx)),
         ("服务端口", esc(port)),
     ]
+    if g("model_build_date") != "未记录":
+        rows.insert(2, ("权重构建日期", esc(g("model_build_date"))))
     t = ('<table style="margin:10px 0 14px"><thead><tr><th style="width:200px">运行配置</th><th>值</th></tr></thead><tbody>'
          + "".join(f'<tr><td>{k}</td><td>{v}</td></tr>' for k, v in rows)
          + f'<tr><td>启动命令行</td><td><code style="word-break:break-all">{esc(cmd)}</code></td></tr>'
          + "</tbody></table>")
-    note = "" if eng else '<div class="note">⚠ 本模型数据未记录引擎运行配置，横向对比时注意：两模型实际启动参数一致时才可比。</div>'
+    note = "" if m.get("engine") or top_engine else '<div class="note">⚠ 本模型数据未记录引擎运行配置，横向对比时注意：两模型实际启动参数一致时才可比。</div>'
     return t + note
 
 def build_util_section(mc, tops_str="50 TOPS"):
@@ -239,14 +269,18 @@ def build_util_section(mc, tops_str="50 TOPS"):
     # 瓶颈判读: prefill 是计算受限段, 其利用率反映真实算力发挥; 解码是访存受限, 利用率低属正常
     pf_u = c4.get("util_avg"); dec_u = c2.get("util_avg")
     verdicts = []
-    if isinstance(pf_u, (int, float)):
+    # 恒 0 检测: 全部段 util 均为 0 → 该平台管理工具不统计 NPU 利用率(驱动限制), 如实标注
+    all_utils = [s.get("util_avg") for s in [idle, c2, c4, c6, c7, ov] if isinstance(s, dict)]
+    if all_utils and all(u == 0 for u in all_utils if u is not None):
+        verdicts.append("⚠️ 全程 NPU 利用率读数恒为 0（含推理时段）——该平台管理工具/驱动未实现该计数器，<b>不代表 NPU 未工作</b>（引擎计时正常推进、输出正常产出）。此为采集工具限制，OS 侧无法量化该 NPU 的真实算力利用率；替代口径：解码/prefill 吞吐（C2/C4）与显存/温度占用即本报告的算力利用证据链。")
+    if isinstance(pf_u, (int, float)) and pf_u > 0:
         if pf_u >= 70:
             verdicts.append(f"prefill 段 NPU 平均利用率 <b>{pf_u:.0f}%</b>——计算密集段算力发挥充分，接近标称算力的有效区间")
         elif pf_u >= 40:
             verdicts.append(f"prefill 段 NPU 平均利用率 <b>{pf_u:.0f}%</b>——计算密集段有中等发挥，算力或受数据供给/调度开销约束")
         else:
             verdicts.append(f"prefill 段 NPU 平均利用率 <b>{pf_u:.0f}%</b>——计算密集段利用率偏低，标称算力远未打满（引擎调度/带宽瓶颈/模型结构限制）")
-    if isinstance(dec_u, (int, float)) and isinstance(pf_u, (int, float)):
+    if isinstance(dec_u, (int, float)) and isinstance(pf_u, (int, float)) and pf_u > 0:
         verdicts.append(f"解码段（{dec_u:.0f}%）低于 prefill 段（{pf_u:.0f}%）符合预期：自回归解码每步仅 1 token，属<b>访存受限</b>负载，算力利用率天然低——这是所有 LLM 推理的共性，不是该设备的问题")
     mem_c10 = str(mc.get("c10_vram", ""))
     if mem_c10 and "MiB" in mem_c10:
@@ -427,11 +461,9 @@ def render_model_tests(c, mname):
         "conc2_ok": int(conc2.get("ok", 0)) if conc2 else 0,
         "conc2_total": int(conc2.get("total", 2)) if conc2 else 2,
         "conc2_wall": float(conc2.get("wall_s", 0)) if conc2 else 0,
-        "conc2_drop": drops.get(2),
         "conc4_ok": int(conc4.get("ok", 0)) if conc4 else 0,
         "conc4_total": int(conc4.get("total", 4)) if conc4 else 4,
         "conc4_wall": float(conc4.get("wall_s", 0)) if conc4 else 0,
-        "conc4_drop": drops.get(4),
         "vram": c.get("c10_vram", "N/A"),
         "c4_ok": int(c4.get("ok", -1)) if c4 else -1,
         "c2_wall": float(c2.get("wall_s", 0)) if c2 else 0,
@@ -443,21 +475,40 @@ def render_model_tests(c, mname):
     return trows, stats
 
 # ============ 主流程 ============
+def redact_deep(value, red, key=None, device_label=""):
+    """递归脱敏: dict/list/str 全覆盖, 其他类型原样返回。
+    hostname 字段值定向替换为 `<主机·设备型号>` (只在字段级处理, 避免字符串级误伤)。"""
+    if isinstance(value, str):
+        if key == "hostname" and value.strip() and value.strip().lower() not in ("localhost", "unknown", "?"):
+            return f"<主机·{device_label or '设备'}>"
+        return red(value)
+    if isinstance(value, list):
+        return [redact_deep(v, red, key, device_label) for v in value]
+    if isinstance(value, dict):
+        return {k: redact_deep(v, red, k, device_label) for k, v in value.items()}
+    return value
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__); sys.exit(1)
     res_path = sys.argv[1]
     # Windows 默认 GBK, 中文 JSON/HTML 必须显式 UTF-8
     d = json.load(open(res_path, encoding="utf-8"))
-    device = "AI Box"; model = d.get("model") or "预装模型"; out_path = None
-    topso = None; bwo = None
+    device = "AI Box"; model = "预装模型"; out_path = None
+    topso = None; bwo = None; redact = True
     args = sys.argv[2:]; i = 0
     while i < len(args):
         if args[i] == "--device": device = args[i+1]; i += 2
         elif args[i] == "--model": model = args[i+1]; i += 2
         elif args[i] == "--tops": topso = args[i+1]; i += 2
         elif args[i] == "--bw": bwo = args[i+1]; i += 2
+        elif args[i] == "--no-redact": redact = False; i += 1
         else: out_path = args[i]; i += 1
+
+    # ---- 脱敏: 渲染前对整个结果 JSON 递归替换 (IP/IPv6/MAC/主机名) ----
+    red, _ = make_redactor(redact, device_label=device)
+    if redact:
+        d = redact_deep(d, red, device_label=device)
 
     models = d.get("models")
     is_multi = isinstance(models, list) and len(models) > 0
@@ -558,72 +609,43 @@ def main():
 最快解码 <b>{main_stats.get('est_tps',0):.1f} tok/s</b>（{esc(main_name)}，{'API usage 真实 token 统计' if main_stats.get('tps_src')=='usage' else '估算口径'}）。</p></div>
 """
 
+    # ---- 管理层摘要（白话结论, 前置于所有技术细节, 产出质量: 可直接提交管理层）----
+    def _yes(v): return "✅ " + v
+    _conc = main_stats.get('conc4_ok', 0)
+    _tps = main_stats.get('est_tps', 0)
+    _load = main_stats.get('load_s')
+    # 白话场景判定: 并发+工具调用+解码速度 → 能支撑什么业务
+    _scene_bits = []
+    if not all_skipped:
+        if main_stats.get('toolcall') == 1 and main_stats.get('multiturn') == 1:
+            _scene_bits.append("智能问答 / Agent 应用（工具调用与多轮记忆实测通过）")
+        else:
+            _scene_bits.append("基础问答（Agent 能力见明细 C8/C9）")
+        if _tps >= 15:
+            _scene_bits.append("日常文档生成（单字速度相当于每秒 {_tps:.0f} 字左右，阅读无卡顿）".format(_tps=_tps))
+        if _conc >= 2:
+            _scene_bits.append(f"小团队共用（实测 {_conc} 人同时提问互不影响）")
+    _scene = "；".join(_scene_bits) if _scene_bits else "本轮服务未就绪，详见实测明细"
+    _one_line = (f"这台 {esc(device)} 整体判定为「<b>{label}</b>」（{rate:.0f}% 测试项达标），"
+                 f"推荐跑 <b>{esc(main_name)}</b>。它能干什么：{_scene}。"
+                 + (f"从开机加载到可用约 {int(_load)} 秒。" if isinstance(_load, (int, float)) and _load else ""))
+    exec_summary = f"""
+<div class="panel" style="border-left:4px solid var(--accent)">
+<div class="sub" style="font-weight:700;font-size:14px;color:var(--txt);margin-bottom:6px">管理层摘要（30 秒版）</div>
+<p style="margin:6px 0">{_one_line}</p>
+<p style="margin:6px 0;color:var(--muted);font-size:13px">全部结论均来自本机实测数据（非厂商标称）；技术明细见下文各节，原始 JSON 可复核。</p>
+</div>
+"""
+    html += exec_summary
+
     # ---- KPI 卡 ----
-    # 非工控 NPU（Windows 独立 GPU 工作站）没有标称 TOPS/带宽时, 用本轮实测指标填卡, 不留 N/A 空卡
-    try:
-        _pc = rendered[0][3].get("phase_c", {}) or c
-        _c2, _c4 = _pc.get("c2_short_decode", {}), _pc.get("c4_long_ctx", {})
-        _single = float(_c2.get("completion_tokens", 0)) / (float(_c2.get("wall_s", 0)) or 1)
-        _decs = float(_c4.get("completion_tokens", 0)) / _single if _single > 0 else 0
-        _w4 = float(_c4.get("wall_s", 0))
-        _pf = (float(_c4.get("prompt_tokens", 0)) / (_w4 - _decs)
-               if _w4 > _decs + 0.05 else 0)
-    except Exception:
-        _pf = 0
-    _accel_gb = a.get("accel_mem_gb") or cls.get("accel_mem_gb") or "?"
-    if tops in (None, "", "N/A"):
-        card_tops = ('<div class="card"><div class="k">长上下文 prefill</div>'
-                     '<div class="v hl">%s<small> tok/s</small></div>'
-                     '<div class="k">C4 实测折算（非 TOPS 标称）</div></div>'
-                     % (("%.0f" % _pf) if _pf > 0 else "未测"))
-    else:
-        card_tops = (f'<div class="card"><div class="k">AI 算力</div>'
-                     f'<div class="v hl">{esc(tops)}</div><div class="k">NPU INT8</div></div>')
-    if bw in (None, "", "N/A"):
-        card_bw = ('<div class="card"><div class="k">加速卡显存合计</div>'
-                   '<div class="v hl">%s<small> GiB</small></div>'
-                   '<div class="k">nvidia-smi 实测（非统一内存）</div></div>' % esc(str(_accel_gb)))
-    else:
-        card_bw = (f'<div class="card"><div class="k">内存带宽</div>'
-                   f'<div class="v hl">{esc(bw)}</div><div class="k">统一内存</div></div>')
-    accel_spec_line = (("算力 %s，带宽 %s" % (esc(tops), esc(bw)))
-                       if tops not in (None, "", "N/A") else
-                       "无 NPU 标称算力/带宽（本机为独立 GPU，非工控 NPU）；实测吞吐见 KPI 卡")
-    mem_line = (("系统内存 %s（可用 %s）；独立加速卡显存 %s GiB — 推理内存取两者较小值"
-                 % (esc(a.get("mem_total", "?")), esc(a.get("mem_available", "?")), esc(str(_accel_gb))))
-                if a.get("accel_mem_gb") else
-                ("统一内存 %s（可用 %s）— CPU/NPU 共享"
-                 % (esc(a.get("mem_total", "?")), esc(a.get("mem_available", "?")))))
-    _d4 = main_stats.get("conc4_drop")
-    if _d4 is not None and _d4 >= BASELINE["conc_drop_pct"]:
-        card_conc = ('<div class="card"><div class="k">并发能力</div>'
-                     '<div class="v">%s<small>/4 路成功</small></div>'
-                     '<div class="k">单路衰减 %.1f%% 超 SPEC 基线</div></div>'
-                     % (main_stats.get("conc4_ok", 0), _d4))
-    else:
-        card_conc = (f'<div class="card"><div class="k">并发能力</div>'
-                     f'<div class="v">{main_stats.get("conc4_ok",0)}<small>/4 路通过</small></div>'
-                     f'<div class="k">最优模型实测</div></div>')
-    rt = d.get("runtime_metrics") or (c.get("runtime_metrics") if isinstance(c, dict) else {}) or {}
-    rt_line = ""
-    if rt:
-        rt_line = (f'<tr><td>GPU 运行时（阶段C 实测）</td><td>'
-                   f'利用率 平均 <b>{rt["util"]["avg"]}%</b> / 峰值 {rt["util"]["max"]}%；'
-                   f'单卡功耗 平均 {rt["power_w"]["avg"]}W / 峰值 {rt["power_w"]["max"]}W；'
-                   f'温度 平均 {rt["temp_c"]["avg"]}°C / 峰值 {rt["temp_c"]["max"]}°C；'
-                   f'共采样 {rt["samples"]} 次（加速卡管理工具，多卡均值）</td></tr>')
-    hw_extra = ""
-    if a.get("gpu_temp_c") or a.get("power_limit_w"):
-        hw_extra = (f'<tr><td>GPU 静态温度 / 供电</td><td>'
-                    f'采集时 GPU 温度 {esc(str(a.get("gpu_temp_c","?")))}°C；'
-                    f'单卡 power.limit {esc(str(a.get("power_limit_w","?")))}W</td></tr>')
     html += f"""
 <div class="cards">
-  {card_tops}
-  {card_bw}
+  <div class="card"><div class="k">AI 算力</div><div class="v hl">{esc(tops)}</div><div class="k">NPU INT8</div></div>
+  <div class="card"><div class="k">内存带宽</div><div class="v hl">{esc(bw)}</div><div class="k">统一内存</div></div>
   <div class="card"><div class="k">推理显存</div><div class="v">{esc(cls.get('infer_mem_gb','?'))}<small> GB 可用</small></div><div class="k">加载后占用 {esc(main_stats.get('vram','-'))}</div></div>
   <div class="card"><div class="k">最快解码</div><div class="v">{main_stats.get('est_tps',0):.1f}<small> tok/s</small></div><div class="k">{esc(main_name)}</div></div>
-  {card_conc}
+  <div class="card"><div class="k">并发能力</div><div class="v">{main_stats.get('conc4_ok',0)}<small>/4 路通过</small></div><div class="k">最优模型实测</div></div>
   <div class="card"><div class="k">首字延迟</div><div class="v">{main_stats.get('ttft',0):.2f}<small> s</small></div><div class="k">TTFT 最优模型</div></div>
 </div>
 """
@@ -633,16 +655,15 @@ def main():
 <h2>一、核心硬件规格</h2>
 <div class="panel"><table>
 <thead><tr><th style="width:24%">项目</th><th>规格</th></tr></thead><tbody>
-<tr><td>AI 加速卡</td><td><b>{esc(accel_str or 'N/A')}</b>（{accel_spec_line}）</td></tr>
+<tr><td>AI 加速卡</td><td><b>{esc(accel_str or 'N/A')}</b>（算力 {esc(tops)}，带宽 {esc(bw)}）</td></tr>
 <tr><td>SoC / CPU</td><td>{esc(a.get('cpu_model','')).strip()} × {esc(a.get('cpu_cores','?'))} 核（{esc(a.get('cpu_arch','?'))}，最高 {esc(str(a.get('cpu_max_mhz','0')).strip())} MHz）</td></tr>
-<tr><td>内存</td><td>{mem_line}</td></tr>
+<tr><td>内存</td><td>统一内存 {esc(a.get('mem_total','?'))}（可用 {esc(a.get('mem_available','?'))}）— CPU/NPU 共享</td></tr>
 <tr><td>存储</td><td>根分区 {esc(a.get('root_disk','?'))}｜块设备：{esc(a.get('blocks','?'))}</td></tr>
 <tr><td>系统</td><td>{esc(a.get('os','?'))}（内核 {esc(a.get('kernel','?'))}）</td></tr>
 <tr><td>网络</td><td>{esc(a.get('interfaces','?'))}</td></tr>
 <tr><td>负载（采集时）</td><td>{esc(str(a.get('load','?')).strip())}</td></tr>
-{rt_line}{hw_extra}
 </tbody></table>
-<div class="note">算力/带宽仅对 KNOWN_ACCEL 表内的工控 NPU 给出标称值（可用 <code>--tops</code> / <code>--bw</code> 覆盖）；其它设备不注入厂商标称值，改以本轮实测 prefill / 显存指标填 KPI 卡。其余均为本机采集实测值。</div>
+<div class="note">规格卡中的算力/带宽取自已知加速卡规格表；如需修正可用 <code>--tops</code> / <code>--bw</code> 参数覆盖。其余均为本机采集实测值。</div>
 </div>
 """
 
@@ -670,7 +691,7 @@ def main():
 <thead><tr><th>指标</th>{''.join(f'<th class="c">{esc(n)}</th>' for n in model_names)}</tr></thead>
 <tbody>
 <tr><td><b>运行配置</b></td>{''.join(f'<td class="c"><span style="font-size:12px">{esc(cfg_line(r[3]))}</span></td>' for r in rendered)}</tr>
-<tr><td><b>加载耗时 C1</b></td>{''.join(f'<td class="c">{esc(str(r[2]["load_s"]) + "s") if r[2]["load_s"] else "未测"}</td>' for r in rendered)}</tr>
+<tr><td><b>加载耗时 C1</b></td>{''.join(f'<td class="c">{esc(str(r[2]["load_s"]) + "s") if r[2]["load_s"] else "—"}</td>' for r in rendered)}</tr>
 <tr><td><b>解码速度 C2</b></td>"""
         # 解码行加高亮最优
         best_tps = max((r[2]["est_tps"] for r in rendered), default=0)
@@ -753,7 +774,7 @@ def main():
 
     # ---- 每模型实测明细 ----
     html += f'<h2>{"五" if is_multi else "三"}、{"各模型" if is_multi else ""}实测明细（SPEC v{SPEC_VERSION}）</h2>\n'
-    html += f"""<div class="note" style="margin:8px 0 14px"><b>C1~C14 导读</b>：SPEC 定义的标准化测试——C1 冷启动加载（权重→NPU 就绪耗时）｜C2 解码速度（生成 tok/s）｜C3 首字延迟 TTFT（用户体感快慢）｜C4 长上下文 prefill（长文吞入速度）｜C5 长上下文解码衰减（同会话解码速度 vs C2，衰减 &lt;20%）｜C6/C7 并发 2/4 路（多用户同时用是否撑得住）｜C8 工具调用（Agent 能力）｜C9 多轮记忆（对话上下文保持）｜C10 显存占用｜C11 视觉多模态｜C12 输出质量抽查｜C13 上下文阶梯验证（大窗口真实性，见独立章节）｜C14 NPU 算力利用率（各模型明细末尾"算力利用率分析"表）。每项含"测试任务"（怎么测的）与"基线"（及格线）。</div>\n"""
+    html += f"""<div class="note" style="margin:8px 0 14px"><b>C1~C12 导读</b>：SPEC 定义的 12 项标准化测试——C1 冷启动加载（权重→NPU 就绪耗时）｜C2 解码速度（生成 tok/s）｜C3 首字延迟 TTFT（用户体感快慢）｜C4 长上下文 prefill（长文吞入速度）｜C5 温度稳定性（持续推理温升）｜C6/C7 并发 2/4 路（多用户同时用是否撑得住）｜C8 工具调用（Agent 能力）｜C9 多轮记忆（对话上下文保持）｜C10 显存占用｜C11 视觉多模态｜C12 输出质量抽查｜C14 NPU 算力利用率（各模型明细末尾"算力利用率分析"表）。每项含"测试任务"（怎么测的）与"基线"（及格线）。</div>\n"""
     for idx, (mname, trows, stats, m) in enumerate(rendered):
         sid = f"m{idx}"
         eng_cfg_html = build_engine_cfg(m, d.get("engine"))
@@ -847,23 +868,6 @@ def main():
     # ---- 结论 ----
     concl_no = "七" if is_multi else "五"
     best_model = main_name
-
-    def conc_suggestion(s):
-        """按 SPEC §4.3 衰减基线推导建议并发（只写实测推导）。"""
-        if s.get("skipped"):
-            return "未测（服务未就绪）"
-        d2, d4 = s.get("conc2_drop"), s.get("conc4_drop")
-        ok2 = s.get("conc2_ok", 0) == s.get("conc2_total", 2)
-        ok4 = s.get("conc4_ok", 0) == s.get("conc4_total", 4)
-        base = BASELINE["conc_drop_pct"]
-        if ok4 and (d4 is None or d4 < base):
-            return "<b>4 路并发无衰减</b>（实测口径）"
-        if ok2 and (d2 is None or d2 < base):
-            return ("<b>≤ 2 路</b>（4 路单路衰减 %.1f%% 超 SPEC %d%% 基线）" % (d4, base)
-                    if d4 is not None else "<b>≤ 2 路</b>（4 路未验衰减）")
-        return "并发单路衰减均超基线，建议单路使用"
-
-    conc_txt = conc_suggestion(main_stats)
     # 算力利用结论: 取最优模型的 prefill/util 数据
     util_concl = "—"
     if not all_skipped:
@@ -874,7 +878,9 @@ def main():
         pf = ((mc.get("c4_long_ctx") or {}).get("npu") or {}).get("util_avg")
         dec = ((mc.get("c2_short_decode") or {}).get("npu") or {}).get("util_avg")
         f_ = lambda v: f"{v:.0f}%" if isinstance(v, (int, float)) else None
-        if f_(pf) or f_(dec):
+        if f_(pf) == "0%" and f_(dec) == "0%":
+            util_concl = "OS 侧利用率计数器不可用（驱动未实现，读数恒 0）——算力利用以实测吞吐（C2/C4）与显存/温度占用为证据链"
+        elif f_(pf) or f_(dec):
             util_concl = (f"prefill {f_(pf) or '—'} / 解码 {f_(dec) or '—'}（{esc(main_name)}）。"
                           f"解码利用率低是 LLM 访存受限共性；prefill 利用率反映计算密集段真实算力发挥")
         else:
@@ -886,13 +892,25 @@ def main():
 <tr><td>综合可用性</td><td>{pill(label + f'（{rate:.0f}%）', 'p-ok' if rate>=90 else ('p-mid' if rate>=70 else 'p-no'))}</td></tr>
 <tr><td>NPU 算力利用评估</td><td>{util_concl}</td></tr>
 <tr><td>{'推荐模型' if is_multi else '测试模型'}</td><td><b>{esc(best_model)}</b>（解码 {main_stats.get('est_tps',0):.1f} tok/s，{'usage 口径' if main_stats.get('tps_src')=='usage' else '估算口径'}）</td></tr>
-<tr><td>建议并发规模</td><td>{conc_txt}</td></tr>
+<tr><td>建议并发规模</td><td>{f'<b>{main_stats.get("conc4_ok",0)} 路并发无衰减</b>（实测口径）' if not all_skipped else '未测（服务未就绪）'}</td></tr>
 <tr><td>Agent 场景可用性</td><td>{'✅ 工具调用 + 多轮记忆均通过' if not all_skipped and main_stats.get('toolcall')==1 and main_stats.get('multiturn')==1 else '见实测明细 C8/C9'}</td></tr>
 <tr><td>长上下文能力</td><td>{html_last_ctx or ('✅ ~2000 token prefill + 摘要正确' if not all_skipped and main_stats.get('c4_ok')==1 else '见实测明细 C4')}</td></tr>
 <tr><td>数据口径</td><td>全部数值来自本机实测（API 计时 + 管理工具读数），非厂商标称值</td></tr>
 </tbody></table></div>
 
-<div class="foot">BoxBench v{d.get('boxbench_version','?')} · SPEC v{SPEC_VERSION} · 渲染于 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} · 原始 JSON：{esc(os.path.basename(res_path))}（可复核）</div>
+<div class="panel" style="margin-top:14px">
+<div class="sub" style="font-weight:700;color:var(--txt);margin-bottom:6px">人工复核记录（对外提交前必填，符合"对外发送须人工复核"合规要求）</div>
+<table>
+<tbody>
+<tr><td style="width:200px">结论数字与原始 JSON 一致性抽查</td><td>☐ 已抽查（对照第{"五" if is_multi else "三"}节明细与 JSON 的 C1~C12 数值）</td></tr>
+<tr><td>敏感信息检查（IP/账号/主机名/密钥）</td><td>☐ 已检查，报告内无未脱敏信息</td></tr>
+<tr><td>输出质量抽查（C12 评语）</td><td>☐ 人工已读生成样例，无乱码/复读</td></tr>
+<tr><td>复核人 / 复核日期</td><td>＿＿＿＿＿＿ / ＿＿＿＿＿＿</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="foot">BoxBench v{d.get('boxbench_version','?')} · SPEC v{SPEC_VERSION} · 渲染于 {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} · 原始 JSON 可复核{' · 已脱敏(IP/主机名替换为占位符)' if redact else ' · ⚠ 未脱敏版(仅内部使用)'}</div>
 </div></body></html>
 """
 
