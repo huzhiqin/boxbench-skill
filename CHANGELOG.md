@@ -2,6 +2,57 @@
 
 All notable changes to BoxBench Skill will be documented in this file.
 
+## [1.9.0] - 2026-11-16
+
+### Added（参赛合规与可复现强化）
+- **报告默认脱敏**：`render_report.py` 渲染前对整个结果 JSON 递归脱敏——IP/IPv6/MAC 替换为占位符（回环地址保留），`phase_a.hostname` 定向替换为 `<主机·设备型号>`；`--no-redact` 可关闭（产物尾注标"⚠ 未脱敏版"）。经验池上传路径本有双重脱敏，现报告交付路径对齐同一口径，报告可直接对外提交。
+- **人工复核环节（合规硬要求）**：报告尾部新增"人工复核记录"表（数字一致性抽查/敏感信息检查/C12 人工已读/复核人与日期）；SKILL.md 新增第 5.5 步交付前人工复核，明确"助手不得自动外发"。
+- **管理层摘要**：报告首屏新增"30 秒版"白话结论（整体判定/推荐模型/能支撑什么业务/加载耗时），管理层无需读懂 prefill/TTFT 即可决策。
+- **过程留痕**：`boxbench.sh` 与 `boxbench_windows.py` 的日志全部带时间戳落盘 `boxbench_run_*.log`，作为真实执行的过程记录与 JSON/报告一并归档。
+- **RUNBOOK.md**：一页复现 SOP——前置条件→逐步命令→每步预期输出→10 类异常对照表（SSH 密码/CRLF/服务未就绪/资源不足/vendor 丢失/UTF-16LE 陷阱/NPU 格式崩溃等），换人可 100% 复现。
+- **AUTOMATION.md**：定时回归模板（WorkBuddy 定时任务 / cron 双形态），在管盒子周期自动跑分+四项硬指标趋势对比。
+
+### Changed
+- README 新增"价值量化"段：人工 ~5h/台 vs BoxBench ~30min/台的环节级对比表。
+
+## [1.8.0] - 2026-11-16
+
+### Fixed
+- **跨语言哈希不一致（严重）**：Python 客户端把整数值浮点序列化成 `0.0`，JS 服务端写成 `0`，同一份实测两侧算出的 `evidence_hash` 不同，客户端预填的哈希会被服务端 G4 判为不符。`canonical_json` 现按 JCS（RFC 8785）把整数值浮点规范为整数，三向（Python / TS / atom_id）哈希全部对齐。
+- **女巫攻击（严重）**：发布者身份是客户端自选 token 的哈希，换个 token 就是“新的独立发布者”，单机数据即可升 T2。独立性改为按**设备指纹**（从证据硬件字段推导）计数，换 token 无效。受影响的 `facts.publishers` 正名为 `devices`。
+
+### Added
+- `sync --all`：先拉平台目录，再逐个把公共经验合并进 `PLATFORM_NOTES.md`。
+- `selftest`：离线自测 PLATFORM_NOTES 合并的不变量（手写内容保留、顺序、标题层级、幂等、原位替换、新平台追加）与 canonical JSON 浮点规范。已接入 `exp-verify.sh`。
+- 服务端 `GET /api/exp/pull` 不带 `platform_key` 时返回平台目录概览（trust / facts / devices / last_seen），供客户端自动发现。
+- 仲裁台新增「仲裁记录」区块（`/api/exp/queue` 返回最近 30 条 `curator_log`），人工裁决可追溯。
+
+### Fixed（续）
+- `curator_log` 表建了但**从未写入**，人工把数据提到 T3 没有任何审计轨迹。现每次 approve/reject/quarantine 都落一条。
+- **`min_trust=0` 源过过滤漏洞（严重）**：raw 模式只比 `trust >= min_trust`，被隔离的篡改原子 `trust=0` 会被 `0 >= 0` 放行、对外公开。现在公开规则统一为“必须 status=accepted”，并抽成可测函数 `publicAtoms()`。
+- `min_trust=abc` 静默返回空池（`NaN` 比较恒假），看起来像“没有数据”。参数现夹在 1–3，非法值回落默认 2。
+- 补传（`flush`）原来**逐条发请求**，outbox 有 N 条就串行发 N 次 HTTP。现按服务端上限每批 20 条发送；网络失败整批保留、部分应答只删已确认的，不丢数据。
+- **合并进 PLATFORM_NOTES 的位置与层级**：机器块原来紧贴在平台标题下方，把手写笔记挤到后面、割裂了人写的内容；且 digest 的 `#` 标题会**高过**包裹它的 `##` 章节。现改为插到章节末尾，并把 digest 标题整体降两级。新增 `selftest` 守护这些不变量。
+
+## [1.7.0] - 2026-11-16
+
+### Added
+- **公共经验池（BoxBench Commons）**：全网经验共享。`scripts/boxbench_exp.py` 提供 `sync` / `pull` / `push` / `flush` / `status`，零第三方依赖。
+- `sync` 把公共经验幂等合并进 `PLATFORM_NOTES.md`，用 `<!-- BOXBENCH-COMMONS:BEGIN/END -->` 标记隔离，**绝不覆盖手写内容**，支持 `--dry-run`。
+- 平台键自动推断：从 `engine.engine_name` 首词推导（与 PLATFORM_NOTES 索引方式一致）；推断不出时明确报错，不编造键名。
+- 默认上传、可退出：`BOXBENCH_CONTRIBUTE=0` 只拉不传。离线自动进本地 outbox，`flush` 补传。
+- 服务端门控 G1–G12 + 信任阶梯 T0–T3；仲裁台 `/exp-admin`（批量操作、证据详情展开）。
+
+### Fixed
+- **自我佐证漏洞**：晋升 T2 原按 `evidence_hash` 去重，而哈希含时间戳，同一设备重跑一次即可自我佐证。改为按不同 `publisher_id` 计数（回归测试已覆盖）。
+- `publisherCount` 缺 `status='accepted'` 过滤，会把隔离条目计入。
+- 客户端 ETag 只读不写，`.etag` 永不生成，304 缓存优化完全失效。`_request` 现返回响应头并持久化。
+- `release.sh` 会把 `__pycache__/*.pyc` 当发布文件上传。
+- SKILL.md 资产表多行合并成一行的 Markdown 损坏；SPEC 版本标注过时（v1.2 → v1.4）。
+
+### Changed
+- SKILL.md 第 0 步由「pull 只读」改为「sync 合并」；第 6 步 push 不再要求手填 `--platform`。
+
 ## [1.2] - 2026-11-11
 
 ### Added
@@ -143,3 +194,8 @@ All notable changes to BoxBench Skill will be documented in this file.
 - boxbench.sh: NPU 利用率后台采样静默输出、并发 wait 改精确 PID 等待（含 1.6.4 主体内容）
 
 
+
+## [1.9.1] - 2026-11-16
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
