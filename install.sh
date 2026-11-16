@@ -58,6 +58,8 @@ FILES=(
   "PLATFORM_NOTES.md"
   "README.md"
   "scripts/boxbench.sh"
+  "scripts/boxbench_windows.py"
+  "scripts/boxbench_exp.py"
   "scripts/render_report.py"
   "scripts/vendor/chart.umd.min.js"
 )
@@ -118,7 +120,7 @@ for f in "${FILES[@]}"; do
   echo "  ↓ $f"
   fetch "$f" "${TARGET_DIR}/$f"
 done
-chmod +x "${TARGET_DIR}/scripts/boxbench.sh" "${TARGET_DIR}/scripts/render_report.py"
+chmod +x "${TARGET_DIR}/scripts/boxbench.sh" "${TARGET_DIR}/scripts/render_report.py" "${TARGET_DIR}/scripts/boxbench_exp.py"
 # vendor 完整性校验: 缺失则渲染器会降级 CDN (离线不可用), 提醒用户
 if [ ! -s "${TARGET_DIR}/scripts/vendor/chart.umd.min.js" ]; then
   echo "⚠️  Chart.js vendor 下载失败——报告仍可渲染, 但离线环境图表不可用。可手动执行:" >&2
