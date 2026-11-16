@@ -38,8 +38,20 @@ SPEC_VERSION = "1.4"
 AI_PORTS = [1234, 17701, 8080, 8088, 11434, 8000, 9997]  # LM Studio 默认 1234 在最前
 
 
+RUNLOG_PATH = None  # main() 里初始化
+
+
 def log(msg):
-    print("[boxbench-win] %s" % msg, flush=True)
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = "[%s] [boxbench-win] %s" % (ts, msg)
+    print(line, flush=True)
+    # 过程留痕: 追加写入运行日志文件 (失败不影响主流程)
+    if RUNLOG_PATH:
+        try:
+            with open(RUNLOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
 
 def run_ps(script, timeout=60):
@@ -747,6 +759,9 @@ def main():
 
     now = datetime.datetime.now().astimezone()
     out_path = args.out or "boxbench_results_%s.json" % now.strftime("%Y%m%d_%H%M%S")
+    global RUNLOG_PATH
+    RUNLOG_PATH = "boxbench_run_%s.log" % now.strftime("%Y%m%d_%H%M%S")
+    log("运行日志: %s (过程留痕, 交付时与 JSON/报告一并归档)" % RUNLOG_PATH)
 
     phase_a, mem_total_gb, vram_total_mib = phase_fingerprint()
     phase_b = phase_inventory()
@@ -794,6 +809,7 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     print("OK -> %s" % out_path)
+    log("完成: %s" % out_path)
     log("渲染: python scripts/render_report.py %s [输出.html] --device <型号>" % out_path)
 
 
