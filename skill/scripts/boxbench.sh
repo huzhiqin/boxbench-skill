@@ -21,9 +21,11 @@
 #     BOX_PORT      服务端口 (默认 17701)
 # 产出: ./boxbench_results_{YYYYMMDD_HHMMSS}.json (stdout 输出路径)
 # =============================================================
-VERSION="1.5"
+VERSION="1.6"
 SPEC_VERSION="1.4"
 OUT="boxbench_results_$(date +%Y%m%d_%H%M%S).json"
+# 运行日志落盘 (过程留痕: 每步时间戳, 供复核/复盘/证明真实执行)
+RUNLOG="boxbench_run_$(date +%Y%m%d_%H%M%S).log"
 TMPD=$(mktemp -d)
 trap 'rm -rf "$TMPD"' EXIT
 
@@ -32,7 +34,10 @@ PORT="${BOX_PORT:-17701}"
 ENGINE="${BOX_ENGINE:-/home/dev/houmoAI/houmo/houmo-HLIELLama-xh2/bin/llama-server}"
 ENGINE_LIB="${BOX_ENGINE_LIB:-/home/dev/houmoAI/houmo/houmo-HLIELLama-xh2/lib}"
 
-log() { echo "[boxbench] $*" >&2; }
+log() {
+  local ts; ts="$(date '+%Y-%m-%d %H:%M:%S')"
+  echo "[$ts] [boxbench] $*" | tee -a "$RUNLOG" >&2
+}
 
 # ---------- NPU/加速卡利用率采样器 ----------
 # 后台进程: 每1s读一次 mthreads-gmi -q (或 nvidia-smi), 追加 "epoch util% mem% temp clk_MHz" 到采样文件
@@ -619,3 +624,4 @@ json.dump(d, open('$OUT','w'), ensure_ascii=False, indent=2)
 print('OK -> $OUT')
 " || { echo 'JSON 组装失败' >&2; cp "$TMPD/out.json" "${OUT}.raw"; exit 1; }
 log "完成: $OUT"
+log "运行日志: $RUNLOG (过程留痕, 交付时与 JSON/报告一并归档)"
