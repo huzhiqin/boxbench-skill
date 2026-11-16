@@ -197,5 +197,9 @@ All notable changes to BoxBench Skill will be documented in this file.
 
 ## [1.9.1] - 2026-11-16
 
+### Fixed
+- **release.sh bump 污染 SPEC 版本**：bump_version 曾把 skill/README.md 的 "SPEC 1.4" 覆盖为 skill 版本号，现固定为 SPEC 1.4。
+- **渲染器功能移植回归**：把 HEAD(v1.6.1) 独有而 11-11 实战线丢失的 4 块功能移植回 render_report.py——C1 首请求就绪回退口径(c1_probe_s)、C5 流式分段 prefill+解码衰减、并发单路衰减超 30% 按 SPEC 判失败、运行配置表权重构建日期+Windows 路径兼容。合成数据验证全部通过。
+
 ### Changed
-- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+- 12 个文件同步 GitHub + Gitee（含新增 RUNBOOK.md / AUTOMATION.md / boxbench_exp.py）。
