@@ -1,6 +1,6 @@
 # BoxBench — 工控算力盒子标准化测试套件
 
-> 版本 1.9.1 ｜ SPEC 1.4 ｜ 2026-11-16
+> 版本 1.10.1 ｜ SPEC 1.4 ｜ 2026-11-17
 > **工具无关设计**：本套件可在任何 AI 编程工具中使用（WorkBuddy / Claude Code / Cursor / 其它 Agent），目录整体拷贝即可转移。
 
 ## 这是什么
@@ -58,6 +58,19 @@ export BOXBENCH_CONTRIBUTE=0                               # 退出贡献（只�
 
 ## 快速开始
 
+### 实时测试工作台
+
+交互测试默认用本机工作台包装原采集命令。动态流程图显示实际执行状态，点击节点查看详情；右侧显示耗时，底部显示实时日志。SSH 测试无需给设备开放网页端口。
+
+```bash
+python3 scripts/boxbench_live.py --demo   # 仅界面演示，无实测数据
+python3 scripts/boxbench_live.py -- ssh user@device "bash ~/boxbench.sh collect"
+# Windows 本机：
+python scripts/boxbench_live.py -- python scripts/boxbench_windows.py --all
+```
+
+在 Codex 等有内置浏览器的 Agent 中加 `--no-open`，随后由 Agent 打开输出的 `BOXBENCH_LIVE_URL`。前端资源已包含在 `scripts/live/`，离线可用。结束后看板保留15分钟；CI 使用 `--linger 0`。快照只表示执行过程，不能替代实测结果／脱敏报告。多模型历史保存在快照 `models` 数组；独立 C13 仍用原日志查看。
+
 ### 方式一：通过 AI 工具（推荐）
 把整个 `skill/` 目录给任何 Agent（作为 skill 或直接放入上下文），说"测这台盒子：IP x.x.x.x，账号 xx，密码 xx"。Agent 按 SKILL.md 流程执行。
 
@@ -109,6 +122,8 @@ skill/
 └── scripts/
     ├── boxbench.sh          # Linux/盒子端采集脚本（bash, 无依赖, 日志落盘留痕）
     ├── boxbench_windows.py  # Windows 端一键采集（LM Studio/NVIDIA 已验证, 日志落盘留痕）
+    ├── boxbench_live.py     # 本机实时工作台，包装本地/SSH 测试命令
+    ├── live/               # 动态流程图页面与离线图标
     ├── render_report.py     # 报告渲染器（纯 Python3 标准库, 默认脱敏+复核记录+管理层摘要）
     └── vendor/              # 报告内嵌图表资源
 ```
