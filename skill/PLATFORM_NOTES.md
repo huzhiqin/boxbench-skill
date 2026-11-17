@@ -48,6 +48,7 @@
 | Qwen3.8-27b-mtp(W4A8) 20260911 | 136s | 4.8 tok/s | 1.12s | ✅ 无衰减 | 5.8G/31.4G | 34.5℃ |
 
 > 2026-11-11 boxbench v1.5 复测（usage 口径覆盖旧估算值）。NPU 利用率计数器不可用（见已踩坑 #7）。
+> 2026-11-17 再次复测（同一台 m1000，v1.9.1 脚本 collect 模式）：C2 解码 174tok/7.26s≈24 tok/s、TTFT 0.4s、显存 3.8G/31.4G、并发 2/4 全过、温度峰值 28.6℃——与基线一致，复现稳定。注意并发段 usage.completion_tokens 返回 0（引擎并发响应不回 usage），并发速度只能按 wall_s 判衰减。
 
 ### 🎯 本平台选型结论（2026-11-11，利用率优先）
 
@@ -74,6 +75,19 @@
 **2chips+ 专属（1chip 设备不可跑）**：Qwen3.6_35b W8A8/W5A8（ID 56/57）、Qwen3-Next_80b-a3b（ID 7）、Qwen3.5_122b-a10b（ID 13）、GPT-OSS_120b（ID 117）、Gemma4_31b（ID 88）
 
 ---
+
+<!-- BOXBENCH-COMMONS:BEGIN platform=houmo-HLIELLama-xh2 -->
+> 🤖 公共经验池自动同步（机器生成，勿手改；与本机冲突时以本地实测为准）
+
+### BoxBench Commons — houmo-HLIELLama-xh2
+
+> Auto-generated from the public Commons. Trust tiers: verified (≥2 independent sources) / curated (operator-confirmed).
+> Local measurements always win on conflict; Commons entries are advisory.
+
+#### Baselines
+- Qwen3.6-35B-A3B(W4A8) w4a8: **23.59 tok/s** [curated ×1]
+<!-- BOXBENCH-COMMONS:END -->
+
 
 ## 回写格式
 
