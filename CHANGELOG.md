@@ -2,6 +2,13 @@
 
 All notable changes to BoxBench Skill will be documented in this file.
 
+## [1.10.0] - 2026-11-17
+
+### Added
+- 本机实时测试工作台 `boxbench_live.py`：包装本地/SSH命令、回环HTTP服务、自动浏览器打开、动态蛇形流程、节点详情、运行耗时、实时日志与快照导出。
+- Linux / Windows 采集脚本通过结构化 stderr 事件上报阶段状态；Windows 按实际执行顺序调整流程，支持未就绪跳过、异常和多模型切换历史。
+- 全部前端资源与 Tabler 图标本地分发，无运行时 CDN；提供明确标注的 `--demo` 动效演示。CI 可继续用原脚本或 `--linger 0`。
+
 ## [1.9.0] - 2026-11-16
 
 ### Added（参赛合规与可复现强化）
@@ -203,3 +210,8 @@ All notable changes to BoxBench Skill will be documented in this file.
 
 ### Changed
 - 12 个文件同步 GitHub + Gitee（含新增 RUNBOOK.md / AUTOMATION.md / boxbench_exp.py）。
+
+## [1.10.1] - 2026-11-17
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
