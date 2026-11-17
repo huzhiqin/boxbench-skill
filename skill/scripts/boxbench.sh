@@ -58,7 +58,7 @@ PYLIVE
 }
 skip_model_steps() {
   local step
-  for step in decode context concurrency tools memory resources latency; do
+  for step in decode context concurrency tools memory resources latency agent; do
     progress "$step" skipped "$1"
   done
 }
