@@ -2,6 +2,23 @@
 
 All notable changes to BoxBench Skill will be documented in this file.
 
+## [1.10.2] - 2026-11-17
+
+### Added
+- **阶段 E：OpenClaw Agent 框架集成测试**（SPEC v1.5 / boxbench.sh v1.7）——Linux 设备默认执行
+  - E1 网关探活 / E2 端到端单轮问答 / E3 单工具真实执行 / E4 多步工具链 / E5 输出预算截断 / E6 纯文本回退
+  - 未装 OpenClaw、非 Linux 或 `BOX_AGENT_SKIP=1` 自动跳过，不阻塞其他测试
+  - 设计动机：C8 通过 ≠ Agent 能用——阶段 E 验证 C8 覆盖不到的真实工具执行循环与 tool parser 问题（如 MiniCPM5 专用 parser）
+- 渲染器：每模型新增"Agent 框架集成（阶段 E）"分节（跳过/E2 失败提前收尾均有明确说明），多模型对比表新增"Agent 集成 E"行；E 结果独立于 C 通过率
+- live 看板新增 `agent` 阶段（latency 与 archive 之间）
+- SPEC §4.5 阶段 E 完整定义（触发条件/测试项/判定标准）；SKILL.md 执行流程、E 失败判读与经验库回写指引
+
+## [1.10.1] - 2026-11-17
+
+### Changed
+- SKILL.md 新增硬性规则 #9：真实测试必须用 live 工作台包装并把看板交给用户（内置浏览器打开/系统浏览器弹出/URL 原文发给用户，三选一），"collect 很快""复采"等理由不再构成跳过借口
+- 第 2 步示例命令补充说明：内置浏览器 Agent 用 --no-open 并自行打开 URL，无内置浏览器时省略让系统浏览器弹出
+
 ## [1.10.0] - 2026-11-17
 
 ### Added
@@ -211,7 +228,18 @@ All notable changes to BoxBench Skill will be documented in this file.
 ### Changed
 - 12 个文件同步 GitHub + Gitee（含新增 RUNBOOK.md / AUTOMATION.md / boxbench_exp.py）。
 
+## [1.10.2] - 2026-11-17
+
+### Changed
+- SKILL.md 新增硬性规则 #9：真实测试必须用 live 工作台包装并把看板交给用户（内置浏览器打开/系统浏览器弹出/URL 原文发给用户，三选一），"collect 很快""复采"等理由不再构成跳过借口
+- 第 2 步示例命令补充说明：内置浏览器 Agent 用 --no-open 并自行打开 URL，无内置浏览器时省略让系统浏览器弹出
+
 ## [1.10.1] - 2026-11-17
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+
+## [1.10.3] - 2026-11-17
 
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
