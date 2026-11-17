@@ -37,6 +37,7 @@ STAGES = [
     ("memory", "多轮记忆", "C9 · conversation", "messages", "验证模型是否记住前文的设备编号。"),
     ("resources", "运行资源", "C10 · accelerator", "chart-dots", "采集显存与可用的加速器运行信息。"),
     ("latency", "首字延迟", "C3 · first.token", "clock", "采集首字延迟；计时口径以原始报告为准。"),
+    ("agent", "Agent 集成", "E · openclaw", "shield-check", "OpenClaw 框架集成测试：端到端/工具循环/多步链/输出预算；未装自动跳过。"),
     ("archive", "结果归档", "JSON · results.save", "file-check", "保存原始测试 JSON。HTML 报告另由渲染器生成。"),
 ]
 MODEL_STAGES = {s[0] for s in STAGES[3:-1]}
