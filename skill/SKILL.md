@@ -1,7 +1,7 @@
 ---
 name: box-bench
 description: 工控算力盒子（AI Box）标准化实测。拿到任何新盒子时触发：自动采集硬件指纹、环境盘点、跑模型实测（解码速度/长上下文/并发/工具调用/多轮），按 SPEC 统一标准产出 HTML 报告。支持预装模型和指定模型下发测试（国内模型聚焦，含模型合规性验证），支持多模型顺序测试与横向对比报告。触发词：测盒子、盒子测试、工控盒实测、AI Box benchmark、设备验收。
-version: 1.9.1
+version: 1.10.1
 ---
 
 # BoxBench — 工控算力盒子标准化实测 Skill
@@ -20,6 +20,7 @@ version: 1.9.1
 | `PLATFORM_NOTES.md` | **引擎×芯片经验库（测前必查，测后必回写）** — 同平台坑/规则/可用模型直接复用；`boxbench_exp.py sync` 自动合并公共经验（标记块隔离） |
 | `scripts/boxbench_exp.py` | **公共经验池客户端**（`sync` 测前合并、`push` 测后上传、`pull` 只读，零依赖） |
 | `scripts/boxbench.sh` | 设备端采集脚本（阶段A/B 自动 + 阶段C 自动 + multi 多模型 + C13 上下文阶梯） |
+| `scripts/boxbench_live.py` + `scripts/live/` | **本机实时测试工作台**：包装本地或 SSH 测试命令，动态节点/流动连线/步骤耗时/实时日志/运行快照；纯 Python3 标准库，前端资源离线随包分发 |
 | `scripts/boxbench_windows.py` | **被测设备为 Windows** 的等价一键脚本（阶段A/B/classify + 阶段C C2~C12 + C5 流式分段 + GPU 运行时采样，PowerShell + Python 标准库零依赖，产出与 boxbench.sh 同结构 JSON） |
 | `scripts/render_report.py` | 报告渲染器（纯 Python3 标准库，无第三方依赖；Windows 兼容：反斜杠路径/GBK 控制台/无 NPU 标称值回退实测卡） |
 | `scripts/vendor/chart.umd.min.js` | Chart.js 4.4.1（201K）——渲染器自动内嵌进报告，**随 skill 整体分发/拷贝时必须带上 scripts/ 目录**；vendor 丢失时渲染器自动降级 CDN（需联网） |
@@ -33,6 +34,7 @@ version: 1.9.1
    - 一次同步所有已知平台：`sync --all`（先拉目录再逐个合并）
    - 自测（离线，不联网）：`selftest`
    - 只想看不想改文件：`pull --platform <平台键>`
+   - **信任门槛**：`--min-trust` 默认 2（≥2 台独立设备交叉验证才显示）。单设备上传的数据默认**不展示**（防单机自证），加 `--min-trust 0` 可查看全部
    - 预览合并结果：`sync --platform <平台键> --dry-run`
 3. **查 `PLATFORM_NOTES.md`**（本地）：命中 → 直接套用该平台的坑/规则/可用模型清单（如 NPU 只认专用格式、-dev 0 参数、model-cli 用法），跳过所有已踩过的坑
 4. 未命中 → 全新平台，正常探索，测完**必须回写**（见第 6 步）
@@ -64,6 +66,24 @@ boxbench.sh 默认输出 `tier`（D1~D5 设备档位）与 `recommended_models`�
 跳过的模型在报告中列出但不计通过率。
 
 ### 第 2 步：分发脚本
+**交互测试默认打开实时工作台**：将最新采集脚本传到设备后，在 **Agent 所在本机** 用 `boxbench_live.py` 包装原测试命令。不要在无桌面的盒子端启动浏览器；不要为了演示重复启动一轮真实测试。
+
+```bash
+# Linux 远程测试（SSH 凭据按第1步处理；优先密钥，SSH 不加 -t）
+python3 scripts/boxbench_live.py --no-open -- ssh user@device "bash ~/boxbench.sh collect"
+# 多模型：将原 SSH 的 multi 命令原样放在 -- 后即可
+# Windows 本机测试（python3 换成 python 或 py）
+python scripts/boxbench_live.py --no-open -- python scripts/boxbench_windows.py --all
+```
+
+- 启动后立即读取 `BOXBENCH_LIVE_URL=http://127.0.0.1:.../<随机路径>/`。有内置浏览器的 Agent（如 Codex）**立即在内置浏览器打开这个实际 URL**，保持命令后台运行并正常跟进测试。URL 每次运行不同，不要硬编码。
+- 普通终端用户省略 `--no-open`，会自动打开系统默认浏览器。CI／用户不需要界面时直接运行原采集命令，或加 `--linger 0` 让看板随测试退出。
+- 网页仅监听本机回环地址，资源无 CDN。状态事件经原 SSH 标准错误输出回传，不用开放设备端口。仅支持包装 `auto` / `fingerprint` / `collect` / `multi` 和 Windows 采集；独立 C13 阶梯暂用原日志查看。
+- 已执行/异常/跳过分别展示；**已执行不等于指标达标**，通过率仍以原始 JSON 与报告为准。多模型会重置模型阶段，前一模型事件保存在运行快照的 `models` 中。
+- 测试结束后网页默认保留15分钟（`--linger 秒数` 可改）；原始结果和日志仍按原流程保存。本机另存 `boxbench_live_*.jsonl` 事件记录。界面快照／日志含内部环境信息，仅内部使用，不能当作脱敏报告直接外发。
+- 只想展示界面时使用 `python3 scripts/boxbench_live.py --demo`，页面会标记“演示模式 · 非实测数据”，不连接设备、不产出实测数据。**不得用演示模式替代真实测试。**
+
+以下为设备端原始命令（可放到包装器的 `--` 后，远程执行时放在 SSH 引号内）：
 将 `scripts/boxbench.sh` 传到设备（scp 或粘贴执行均可），运行：
 ```bash
 bash boxbench.sh            # 自动模式：指纹+盘点+（服务就绪则）模型实测
