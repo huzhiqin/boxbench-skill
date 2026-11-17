@@ -54,6 +54,31 @@ def log(msg):
             pass
 
 
+
+def progress(stage, status, detail=""):
+    # Standard event protocol also works when this script is run over SSH.
+    print("@@BOXBENCH_EVENT " + json.dumps(dict(stage=stage, status=status, detail=detail),
+                                           ensure_ascii=False), file=sys.stderr, flush=True)
+
+
+def progress_model(name):
+    print("@@BOXBENCH_EVENT " + json.dumps(dict(type="model", name=name), ensure_ascii=False),
+          file=sys.stderr, flush=True)
+
+
+def end_step(stage, result):
+    failed = isinstance(result, dict) and (bool(result.get("error")) or
+             result.get("ok") == 0 or result.get("s", 0) < 0 or
+             ("total" in result and result.get("ok") != result["total"]))
+    progress(stage, "failed" if failed else "done",
+             "测试结果异常，详见原始 JSON" if failed else "采集结束，指标结论以实测报告为准")
+
+
+def skip_model_steps(reason):
+    for stage in ("decode", "latency", "context", "concurrency", "tools", "memory", "resources"):
+        progress(stage, "skipped", reason)
+
+
 def run_ps(script, timeout=60):
     """PowerShell 5.1 执行, 强制 UTF-8 输出 (中文 Caption 防乱码). 返回 stdout 文本."""
     cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
@@ -432,6 +457,7 @@ class PhaseC:
 
         threading.Thread(target=_sample_loop, daemon=True).start()
         # 探测: LM Studio 无 /health, 直接短请求验证
+        progress("service", "running", "验证模型首请求就绪状态")
         log("probe: POST /v1/chat/completions (服务就绪性)")
         try:
             p, pw = self.post({"model": self.model,
@@ -445,8 +471,12 @@ class PhaseC:
         except Exception as e:
             stop.set()
             log("⚠ 服务未就绪(%s): %s" % (self.api, e))
+            progress("service", "skipped", "推理服务未就绪")
+            skip_model_steps("推理服务未就绪")
             return {"skipped": "service_not_ready", "api": self.api}
 
+        progress("service", "done", "模型首请求就绪；非冷启动计时")
+        progress("decode", "running", "执行短输入生成请求")
         # C2 解码速度
         r2, w2 = self.post({"model": self.model,
                             "messages": [{"role": "user",
@@ -459,6 +489,8 @@ class PhaseC:
         c["c12_sample"] = reply2[:80]
         log("C2: %.2fs / %s tok" % (w2, ct2))
 
+        end_step("decode", {"ok": 1 if reply2 else 0})
+        progress("latency", "running", "等待流式请求首个非空 content chunk")
         # C3 TTFT (首个非空 content chunk)
         try:
             data = json.dumps({"model": self.model,
@@ -488,6 +520,8 @@ class PhaseC:
             log("C3 failed: %s" % e)
             c["c3_ttft"] = {"s": -1.0, "error": str(e)}
 
+        end_step("latency", c.get("c3_ttft", {}))
+        progress("context", "running", "执行长输入与流式同请求分段测试")
         # C4 长上下文
         try:
             r4, w4 = self.post({"model": self.model,
@@ -561,6 +595,8 @@ class PhaseC:
             log("C5 failed: %s" % e)
             c["c5_ctx_decode"] = {"ok": None, "error": str(e)}
 
+        end_step("context", {"ok": 0 if c.get("c4_long_ctx", {}).get("ok") != 1 or c.get("c5_ctx_decode", {}).get("error") else 1})
+        progress("concurrency", "running", "依次执行2路和4路并发请求")
         # C6 / C7 并发
         def one(i):
             try:
@@ -573,6 +609,7 @@ class PhaseC:
                 return 0, 0
 
         for n in (2, 4):
+            progress("concurrency", "running", "执行 %d 路并发请求" % n)
             t0 = time.perf_counter()
             with ThreadPoolExecutor(max_workers=n) as ex:
                 res = list(ex.map(one, range(1, n + 1)))
@@ -583,6 +620,8 @@ class PhaseC:
             log("C%d(并发%d): %s/%s ok in %.2fs" % (6 if n == 2 else 7, n,
                 c["c6c7_conc%d" % n]["ok"], n, wall))
 
+        end_step("concurrency", {"ok": 1 if all(c["c6c7_conc%d" % n]["ok"] == n for n in (2, 4)) else 0})
+        progress("tools", "running", "验证结构化工具调用响应")
         # C8 工具调用
         try:
             r8, _ = self.post({"model": self.model,
@@ -603,6 +642,8 @@ class PhaseC:
             log("C8 failed: %s" % e)
             c["c8_toolcall"] = {"ok": 0, "error": str(e)}
 
+        end_step("tools", c.get("c8_toolcall", {}))
+        progress("memory", "running", "验证设备编号多轮召回")
         # C9 多轮记忆
         try:
             r9, _ = self.post({"model": self.model,
@@ -618,12 +659,15 @@ class PhaseC:
             log("C9 failed: %s" % e)
             c["c9_multiturn"] = {"ok": 0, "error": str(e)}
 
+        end_step("memory", c.get("c9_multiturn", {}))
+        progress("resources", "running", "读取显存与GPU运行采样")
         # C10 显存
         gpus = nvidia_smi()
         c["c10_vram"] = ("; ".join("GPU%s %s/%s MiB" % (g["index"], g["mem_used_mib"],
                                     g["mem_total_mib"]) for g in gpus)) if gpus else "N/A"
         log("C10 vram: %s" % c["c10_vram"])
 
+        progress("resources", "done" if gpus else "skipped", "显存采集结束" if gpus else "nvidia-smi 未提供显存数据")
         stop.set()
         if samples:
             def _stat(i):
@@ -756,6 +800,9 @@ def main():
     ap.add_argument("--all", action="store_true", help="对 /v1/models 全部 LLM 顺序实测")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
+    print("@@BOXBENCH_EVENT " + json.dumps(dict(type="plan", stages=[
+        "hardware", "inventory", "classify", "service", "decode", "latency", "context",
+        "concurrency", "tools", "memory", "resources", "archive"])), file=sys.stderr, flush=True)
 
     now = datetime.datetime.now().astimezone()
     out_path = args.out or "boxbench_results_%s.json" % now.strftime("%Y%m%d_%H%M%S")
@@ -763,9 +810,15 @@ def main():
     RUNLOG_PATH = "boxbench_run_%s.log" % now.strftime("%Y%m%d_%H%M%S")
     log("运行日志: %s (过程留痕, 交付时与 JSON/报告一并归档)" % RUNLOG_PATH)
 
+    progress("hardware", "running", "通过 PowerShell 采集硬件指纹")
     phase_a, mem_total_gb, vram_total_mib = phase_fingerprint()
+    progress("hardware", "done", "硬件指纹采集结束")
+    progress("inventory", "running", "盘点模型、引擎与服务")
     phase_b = phase_inventory()
+    progress("inventory", "done", "环境盘点结束")
+    progress("classify", "running", "匹配硬件档位")
     cls = phase_classify(mem_total_gb, accel_mem_gb(vram_total_mib))
+    progress("classify", "done", "硬件分档结束")
 
     result = {"boxbench_version": VERSION, "spec_version": SPEC_VERSION,
               "timestamp": now.isoformat(timespec="seconds"),
@@ -774,12 +827,15 @@ def main():
     targets = []
 
     if args.mode == "fingerprint":
-        pass
+        progress("service", "skipped", "本次仅采集硬件与环境")
+        skip_model_steps("本次仅采集硬件与环境")
     else:
         models = api_list_models(args.api)
         llms = [m for m in models if not re.search(r"embed|bge|rerank|clip", m, re.I)] or models
         if not llms:
             log("⚠ %s 未发现可用模型, 阶段C 跳过" % args.api)
+            progress("service", "skipped", "未发现可用模型")
+            skip_model_steps("未发现可用模型")
             result["phase_c"] = {"skipped": "service_not_ready", "api": args.api}
         else:
             targets = llms if args.all else [args.model or llms[0]]
@@ -788,6 +844,7 @@ def main():
             if args.all and len(targets) > 1:
                 result["models"] = []
                 for m in targets:
+                    progress_model(m)
                     log("===== 模型: %s =====" % m)
                     result["models"].append({"name": m,
                                              "path": engine.get("engine_bin", ""),
@@ -796,6 +853,7 @@ def main():
                                              "phase_c": PhaseC(args.api, m,
                                                                args.thinking).run()})
             else:
+                progress_model(targets[0])
                 result["phase_c"] = PhaseC(args.api, targets[0], args.thinking).run()
 
     result["skipped_models"] = build_skipped_models(phase_b["model_files"], targets,
@@ -806,8 +864,10 @@ def main():
     _pc = result.get("phase_c") or {}
     if _pc.get("runtime_metrics"):
         result["runtime_metrics"] = _pc["runtime_metrics"]
+    progress("archive", "running", "保存原始实测 JSON")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
+    progress("archive", "done", "原始 JSON 已保存；HTML 报告需另行渲染")
     print("OK -> %s" % out_path)
     log("完成: %s" % out_path)
     log("渲染: python scripts/render_report.py %s [输出.html] --device <型号>" % out_path)
