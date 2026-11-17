@@ -39,6 +39,27 @@ log() {
   echo "[$ts] [boxbench] $*" | tee -a "$RUNLOG" >&2
 }
 
+# Structured events go to stderr, never into result JSON or command substitutions.
+# They also travel over SSH, so the viewer runs on the Agent's local machine.
+progress() {
+  python3 - "$1" "$2" "${3:-}" <<'PYLIVE' >&2
+import json, sys
+print('@@BOXBENCH_EVENT ' + json.dumps(dict(stage=sys.argv[1], status=sys.argv[2], detail=sys.argv[3]), ensure_ascii=False), flush=True)
+PYLIVE
+}
+progress_model() {
+  python3 - "$1" <<'PYLIVE' >&2
+import json, sys
+print('@@BOXBENCH_EVENT ' + json.dumps(dict(type='model', name=sys.argv[1]), ensure_ascii=False), flush=True)
+PYLIVE
+}
+skip_model_steps() {
+  local step
+  for step in decode context concurrency tools memory resources latency; do
+    progress "$step" skipped "$1"
+  done
+}
+
 # ---------- NPU/加速卡利用率采样器 ----------
 # 后台进程: 每1s读一次 mthreads-gmi -q (或 nvidia-smi), 追加 "epoch util% mem% temp clk_MHz" 到采样文件
 # 用法: util_start  (启动, $UTILF 为采样文件) ... util_stop  (停止, 打印采样文件路径)
@@ -109,6 +130,7 @@ PYEOF
 
 # ---------- 阶段 A: 硬件指纹 ----------
 phase_fingerprint() {
+  progress hardware running "采集芯片、内存、存储与加速器"
   log "阶段A: 硬件指纹采集"
   {
     echo "{"
@@ -142,10 +164,12 @@ phase_fingerprint() {
     echo ",\"load\":\"$(uptime | awk -F'load average:' '{print $2}')\""
     echo "}"
   } >> "$TMPD/out.json"
+  progress hardware done "硬件指纹采集结束"
 }
 
 # ---------- 阶段 B: 环境盘点 ----------
 phase_inventory() {
+  progress inventory running "盘点模型、引擎、容器和监听服务，可能需要1–2分钟"
   log "阶段B: 环境盘点(约1-2分钟)"
   echo ",\"phase_b\":{" >> "$TMPD/out.json"
   # 模型权重
@@ -173,17 +197,22 @@ phase_inventory() {
   SRV=$(ss -tlnp 2>/dev/null | grep -E ':(8080|8088|11434|17701|8000|9997)' | awk '{print $4}' | paste -sd' ' -)
   echo ",\"ai_services\":\"$SRV\"" >> "$TMPD/out.json"
   echo "}" >> "$TMPD/out.json"
+  progress inventory done "环境盘点结束"
 }
 
 # ---------- 阶段 C: 单模型测试(需要 API 端点已就绪) ----------
 # 输出到 $TMPD/phasec_fragment.json (一个完整 {} 对象)
 phase_collect() {
+  progress service running "检查推理服务就绪状态"
   log "阶段C: 模型实测采集 (API=$API)"
   if ! curl -s --max-time 5 "$API/health" | grep -q '"ok"'; then
     log "⚠ 服务未就绪($API/health)，跳过阶段C。"
     echo "{\"skipped\":\"service_not_ready\",\"api\":\"$API\"}" > "$TMPD/phasec_fragment.json"
+    progress service skipped "推理服务未就绪，本次未运行模型实测"
+    skip_model_steps "推理服务未就绪"
     return
   fi
+  progress service done "推理服务已就绪"
   {
     echo "{"
     echo "\"api\":\"$API\""
@@ -196,6 +225,7 @@ phase_collect() {
     sleep 4
     IDLE_T1=$(date +%s.%N)
     # C2: 解码速度(短输入,关思考) — tok/s 以 API usage.completion_tokens 为准(引擎统计口径)
+    progress decode running "请求短输入生成，采集真实 usage token 数"
     T0=$(date +%s.%N)
     R1=$(curl -s --max-time 300 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
       "messages":[{"role":"user","content":"请写一段250字左右的短文，介绍人工智能在工业质检中的应用"}],
@@ -210,6 +240,8 @@ try:
 except Exception:
     print("\"prompt_tokens\":-1,\"completion_tokens\":-1")'),\"reply_len\":$(echo "$R1" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["choices"][0]["message"].get("content","")))' 2>/dev/null || echo -1),\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
     # C4/C5: 长上下文
+    progress decode done "短输入生成采集结束，结果写入原始 JSON"
+    progress context running "执行长输入请求，等待模型响应"
     python3 - > "$TMPD/long.json" << 'PYEOF'
 import json
 para = '智能制造通过工业物联网、人工智能、大数据分析和数字孪生技术的深度融合，实现生产过程的自主感知、自主决策和自主执行。智能工厂中设备互联产生海量数据，边缘计算节点负责实时预处理，云端平台承担模型训练与全局优化。机器视觉引入质检环节后缺陷识别准确率大幅提升。预测性维护系统通过振动温度等传感器数据判断设备健康状态，显著压缩非计划停机时间。'
@@ -221,7 +253,10 @@ PYEOF
     echo ",\"c4_long_ctx\":{\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"ok\":$(python3 -c 'import json; d=json.load(open("'$TMPD'/longr.json")); print(1 if d["choices"][0]["message"]["content"] else 0)' 2>/dev/null || echo -1),\"prompt_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("prompt_tokens",-1))' 2>/dev/null || echo -1),\"completion_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("completion_tokens",-1))' 2>/dev/null || echo -1),\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
     echo ",\"idle_baseline\":$(util_summarize "$IDLE_T0" "$IDLE_T1" "$UTILF")"
     # C6/C7: 并发 2/4
+    progress context done "长输入请求采集结束；Linux C5 分段计时不在此脚本中实现"
+    progress concurrency running "依次执行2路和4路并发请求"
     for N in 2 4; do
+      progress concurrency running "执行 ${N} 路并发请求"
       T0=$(date +%s.%N)
       CUR_PIDS=""
       for i in $(seq 1 $N); do
@@ -243,6 +278,8 @@ PYEOF
       echo ",\"c6c7_conc${N}\":{\"ok\":$OKN,\"total\":$N,\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"completion_tokens\":$CTOK,\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
     done
     # C8: 工具调用
+    progress concurrency done "并发请求采集结束"
+    progress tools running "验证 function calling 响应"
     TR=$(curl -s --max-time 100 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
       "messages":[{"role":"user","content":"北京现在天气怎么样？请帮我查一下"}],
       "max_tokens":300,"stream":false,
@@ -251,6 +288,8 @@ PYEOF
     TOOK=$(echo "$TR" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(1 if d["choices"][0].get("finish_reason")=="tool_calls" else 0)' 2>/dev/null || echo -1)
     echo ",\"c8_toolcall\":{\"ok\":$TOOK}"
     # C9: 多轮对话
+    if [ "$TOOK" = 1 ]; then progress tools done "收到工具调用响应"; else progress tools failed "未收到预期工具调用响应，详见原始 JSON"; fi
+    progress memory running "验证多轮对话中的设备编号召回"
     MR=$(curl -s --max-time 200 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
       "messages":[{"role":"user","content":"我的设备编号是 BX-7788，请记住它"},
                   {"role":"assistant","content":"好的，已记住您的设备编号 BX-7788。"},
@@ -259,9 +298,13 @@ PYEOF
     MOK=$(echo "$MR" | python3 -c 'import json,sys; print(1 if "BX-7788" in json.load(sys.stdin)["choices"][0]["message"]["content"] else 0)' 2>/dev/null || echo -1)
     echo ",\"c9_multiturn\":{\"ok\":$MOK}"
     # C10: 加速卡显存
+    if [ "$MOK" = 1 ]; then progress memory done "设备编号召回结束"; else progress memory failed "设备编号未正确召回，详见原始 JSON"; fi
+    progress resources running "读取加速器显存"
     VMEM=$(mthreads-gmi 2>/dev/null | awk '$1 ~ /^[0-9]+$/ && NF>4 {print $5; exit}')
     echo ",\"c10_vram\":\"$VMEM\""
     # C3: 首字延迟 TTFT
+    if [ -n "$VMEM" ]; then progress resources done "显存数据采集结束"; else progress resources skipped "当前管理工具未返回显存数据"; fi
+    progress latency running "执行流式短请求，采集原脚本定义的延迟口径"
     T0=$(date +%s.%N)
     curl -sN --max-time 120 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
       "messages":[{"role":"user","content":"你好"}],
@@ -269,6 +312,7 @@ PYEOF
     T1=$(date +%s.%N)
     echo ",\"c3_ttft\":{\"s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}')}"
     # C12: 输出质量样本
+    progress latency done "延迟采集结束；具体计时口径见报告"
     echo "$R1" | python3 -c 'import json,sys
 try:
     c=json.load(sys.stdin)["choices"][0]["message"].get("content","")
@@ -291,6 +335,20 @@ try:
 except Exception: print(-1)")"
     echo "}"
   } > "$TMPD/phasec_fragment.json"
+  # Correct execution status when API responses are missing or incomplete.
+  python3 - "$TMPD/phasec_fragment.json" <<'PYLIVE' >&2
+import json, sys
+try:
+    c = json.load(open(sys.argv[1]))
+    checks = [('decode', c.get('c2_short_decode', {}).get('reply_len', -1) <= 0),
+              ('context', c.get('c4_long_ctx', {}).get('ok') != 1),
+              ('concurrency', any(c.get('c6c7_conc%d' % n, {}).get('ok') != n for n in (2, 4)))]
+    for stage, bad in checks:
+        if bad:
+            print('@@BOXBENCH_EVENT ' + json.dumps(dict(stage=stage, status='failed', detail='请求结果不完整或未收到有效响应，详见原始 JSON'), ensure_ascii=False), flush=True)
+except (ValueError, OSError):
+    pass
+PYLIVE
 }
 
 # ---------- 服务生命周期 (multi 模式用) ----------
@@ -455,8 +513,12 @@ phase_multi() {
     MNAME="${spec%%|*}"
     MPATH="${spec#*|}"
     log "===== 模型: $MNAME ====="
+    progress_model "$MNAME"
+    progress service running "模型资源预检与服务加载"
     if [ ! -f "$MPATH" ]; then
       log "⚠ 模型文件不存在: $MPATH, 跳过"
+      progress service skipped "模型文件不存在"
+      skip_model_steps "模型文件不存在"
       if [ $FIRST -eq 1 ]; then echo ",\"models\":["; FIRST=0; else echo ","; fi
       echo "{\"name\":\"$MNAME\",\"path\":\"$MPATH\",\"error\":\"file_not_found\"}"
       continue
@@ -465,6 +527,8 @@ phase_multi() {
     PRECHECK=$(precheck_resources "$MPATH")
     if [ "$PRECHECK" != "ok" ]; then
       log "⚠ 资源预检失败: $PRECHECK, 跳过 $MNAME"
+      progress service skipped "$PRECHECK"
+      skip_model_steps "模型资源预检未通过"
       if [ $FIRST -eq 1 ]; then echo ",\"models\":["; FIRST=0; else echo ","; fi
       echo "{\"name\":\"$MNAME\",\"path\":\"$MPATH\",\"error\":\"resource_short\",\"reason\":\"$PRECHECK\"}"
       continue
@@ -474,6 +538,8 @@ phase_multi() {
     LOAD_S=$(start_model_service "$MPATH")
     if [ "$LOAD_S" = "-1" ]; then
       log "服务启动失败, 记录并继续"
+      progress service failed "服务启动失败或超时"
+      skip_model_steps "模型服务启动失败"
       if [ $FIRST -eq 1 ]; then echo ",\"models\":["; FIRST=0; else echo ","; fi
       echo "{\"name\":\"$MNAME\",\"path\":\"$MPATH\",\"error\":\"service_start_failed\"}"
       continue
@@ -586,9 +652,15 @@ elif [ "$MODE" = "ctxtest" ]; then
 else
   phase_fingerprint
   phase_inventory
+  progress classify running "匹配硬件档位与模型区间"
   phase_classify
+  progress classify done "硬件分档结束"
   if [ "$MODE" = "auto" ]; then
     curl -s --max-time 5 "$API/health" >/dev/null 2>&1 && MODE=collect || MODE=fingerprint_only
+  fi
+  if [ "$MODE" = "fingerprint" ] || [ "$MODE" = "fingerprint_only" ]; then
+    progress service skipped "仅采集环境，或推理服务未就绪"
+    skip_model_steps "本次仅采集硬件与环境"
   fi
   if [ "$MODE" = "collect" ]; then
     phase_collect
@@ -605,6 +677,7 @@ else
   fi
 fi
 echo "}" >> "$TMPD/out.json"
+progress archive running "校验并保存原始测试 JSON"
 
 # 校验 JSON 并输出(先清洗非法控制字符; 字符串值内换行替换为空格)
 python3 -c "
@@ -622,6 +695,7 @@ clean = ''.join(out)
 d = json.loads(clean)
 json.dump(d, open('$OUT','w'), ensure_ascii=False, indent=2)
 print('OK -> $OUT')
-" || { echo 'JSON 组装失败' >&2; cp "$TMPD/out.json" "${OUT}.raw"; exit 1; }
+" || { progress archive failed "JSON 组装失败，已保留 raw 文件"; echo 'JSON 组装失败' >&2; cp "$TMPD/out.json" "${OUT}.raw"; exit 1; }
+progress archive done "原始 JSON 已保存：$OUT；HTML 报告需另行渲染"
 log "完成: $OUT"
 log "运行日志: $RUNLOG (过程留痕, 交付时与 JSON/报告一并归档)"
