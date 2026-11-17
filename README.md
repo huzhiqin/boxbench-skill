@@ -1,9 +1,20 @@
 # BoxBench Skill — 工控算力盒子标准化实测套件
 
-> v1.9.1 ｜ 工具无关 ｜ MIT License
+> v1.10.1 ｜ 工具无关 ｜ MIT License
 > 让任何 AI 编程工具（WorkBuddy / Claude Code / Cursor / Cline…）都能对工控算力盒子做标准化实测，产出统一格式的 HTML 验收报告。
 
 ## 安装
+
+新增 **实时测试工作台**：测试启动时打开动态流程网页，实时查看硬件盘点、模型测试、结果归档的进度、耗时和日志。支持本地与 SSH 测试，全离线资源、仅本机访问。
+
+```bash
+# 只预览动效，不运行真实测试
+python3 skill/scripts/boxbench_live.py --demo
+# 包装真实测试命令；默认打开浏览器
+python3 skill/scripts/boxbench_live.py -- ssh user@device "bash ~/boxbench.sh collect"
+```
+
+Agent 使用 `--no-open` 后读取输出的 `BOXBENCH_LIVE_URL`，在内置浏览器打开即可。详见 [SKILL.md](skill/SKILL.md) 第2步。
 
 ### 方式一：直接把仓库丢给 AI 工具（推荐）
 
