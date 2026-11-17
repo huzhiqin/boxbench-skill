@@ -1,6 +1,6 @@
 ---
 name: box-bench
-description: 工控算力盒子（AI Box）标准化实测。拿到任何新盒子时触发：自动采集硬件指纹、环境盘点、跑模型实测（解码速度/长上下文/并发/工具调用/多轮），按 SPEC 统一标准产出 HTML 报告。支持预装模型和指定模型下发测试（国内模型聚焦，含模型合规性验证），支持多模型顺序测试与横向对比报告。触发词：测盒子、盒子测试、工控盒实测、AI Box benchmark、设备验收。
+description: 工控算力盒子（AI Box）标准化实测。拿到任何新盒子时触发：自动采集硬件指纹、环境盘点、跑模型实测（解码速度/长上下文/并发/工具调用/多轮），按 SPEC 统一标准产出 HTML 报告。Linux 设备自动加测 OpenClaw Agent 框架集成（工具执行循环/多步链/输出预算）。支持预装模型和指定模型下发测试（国内模型聚焦，含模型合规性验证），支持多模型顺序测试与横向对比报告。触发词：测盒子、盒子测试、工控盒实测、AI Box benchmark、设备验收。
 version: 1.10.1
 ---
 
@@ -66,18 +66,21 @@ boxbench.sh 默认输出 `tier`（D1~D5 设备档位）与 `recommended_models`�
 跳过的模型在报告中列出但不计通过率。
 
 ### 第 2 步：分发脚本
-**交互测试默认打开实时工作台**：将最新采集脚本传到设备后，在 **Agent 所在本机** 用 `boxbench_live.py` 包装原测试命令。不要在无桌面的盒子端启动浏览器；不要为了演示重复启动一轮真实测试。
+**交互测试必须用 live 工作台包装，且必须把看板打开给用户**（硬性要求，见硬性规则 #9）。在 **Agent 所在本机** 用 `boxbench_live.py` 包装原测试命令。不要在无桌面的盒子端启动浏览器；不要为了演示重复启动一轮真实测试。
 
 ```bash
 # Linux 远程测试（SSH 凭据按第1步处理；优先密钥，SSH 不加 -t）
+# Agent 自带内置浏览器/文件预览能力时，加 --no-open 并自行打开 BOXBENCH_LIVE_URL
 python3 scripts/boxbench_live.py --no-open -- ssh user@device "bash ~/boxbench.sh collect"
+# 没有内置浏览器时，省略 --no-open 让系统浏览器自动弹出
+python3 scripts/boxbench_live.py -- ssh user@device "bash ~/boxbench.sh collect"
 # 多模型：将原 SSH 的 multi 命令原样放在 -- 后即可
 # Windows 本机测试（python3 换成 python 或 py）
 python scripts/boxbench_live.py --no-open -- python scripts/boxbench_windows.py --all
 ```
 
-- 启动后立即读取 `BOXBENCH_LIVE_URL=http://127.0.0.1:.../<随机路径>/`。有内置浏览器的 Agent（如 Codex）**立即在内置浏览器打开这个实际 URL**，保持命令后台运行并正常跟进测试。URL 每次运行不同，不要硬编码。
-- 普通终端用户省略 `--no-open`，会自动打开系统默认浏览器。CI／用户不需要界面时直接运行原采集命令，或加 `--linger 0` 让看板随测试退出。
+- **启动后第一优先级动作**：读取 `BOXBENCH_LIVE_URL=http://127.0.0.1:.../<随机路径>/`，**立即**（a）有内置浏览器/预览面板的 Agent → 在内置浏览器打开该 URL 并告知用户"看板已打开"；（b）无内置浏览器 → 省略 `--no-open` 让系统浏览器弹出；（c）两者都做不到 → 必须把 URL 原文发给用户并说明手动打开。URL 每次运行不同，不要硬编码。
+- **禁止以下列任何理由跳过看板**："collect 很快" / "服务已就绪只是复采" / "复测数据不会变" / "后台跑完直接给你报告"。这些理由全部不成立——用户要的是过程可见，不是只要结果。唯一例外：CI/无人值守场景，或用户明确说"不用界面"。
 - 网页仅监听本机回环地址，资源无 CDN。状态事件经原 SSH 标准错误输出回传，不用开放设备端口。仅支持包装 `auto` / `fingerprint` / `collect` / `multi` 和 Windows 采集；独立 C13 阶梯暂用原日志查看。
 - 已执行/异常/跳过分别展示；**已执行不等于指标达标**，通过率仍以原始 JSON 与报告为准。多模型会重置模型阶段，前一模型事件保存在运行快照的 `models` 中。
 - 测试结束后网页默认保留15分钟（`--linger 秒数` 可改）；原始结果和日志仍按原流程保存。本机另存 `boxbench_live_*.jsonl` 事件记录。界面快照／日志含内部环境信息，仅内部使用，不能当作脱敏报告直接外发。
@@ -99,6 +102,7 @@ bash boxbench.sh ctxtest "模型名|模型文件绝对路径" ["32k,128k,max"]
 - `multi` 模式下 boxbench.sh 自动管理服务生命周期：每模型启动前做**资源预检**（磁盘可用 < 文件+2GB → `⏭ 磁盘空间不足，暂未测试`；权重×1.15 > 推理内存 → `⏭ 内存不足，暂未测试`，均跳过并在报告列出原因），通过后自动起服务计时（C1）→ 跑阶段C → 停服务换下一个。
 - 速度口径（v1.2 起）：C2/C4/并发 均记录 API `usage.prompt_tokens/completion_tokens`，解码速度 = completion_tokens/耗时（**tok/s，usage 口径**）；旧数据自动降级"估算（字/s）"并标注。
 - **NPU 算力利用率（v1.5 起，自动）**：阶段C 全程 1s 间隔采样加速卡（mthreads-gmi -q / nvidia-smi），按 空闲基线/C2解码/C4 prefill/并发/全场 分段汇总利用率均值/峰值/显存%/温度峰值。判读口径：解码段利用率低 = 访存受限（LLM 共性，正常）；**prefill 段利用率 = 计算密集段真实算力发挥**。报告自动出"算力利用率分析"章节。无采样能力设备（无管理工具）自动跳过，不影响其他测试。
+- **Agent 框架集成（SPEC v1.5 起，Linux 默认自动）**：阶段C 结束后自动跑阶段 E（OpenClaw 集成测试，E1 网关探活 / E2 端到端单轮 / E3 单工具真实执行 / E4 多步工具链 / E5 输出预算截断 / E6 纯文本回退）。设备未装 OpenClaw 或非 Linux 自动跳过并标注，不阻塞其他测试。`BOX_OPENCLAW`（CLI 路径）、`BOX_OPENCLAW_PORT`（网关端口，默认 18789）、`BOX_AGENT_SKIP=1`（强制跳过）可控制。**C8 通过 ≠ Agent 能用**——阶段 E 才验证真实工具执行循环。结果独立分节，不计入 C 通过率。
 - 环境变量可覆盖默认路径：`BOX_API`（默认 http://127.0.0.1:17701）、`BOX_ENGINE`（llama-server 路径）、`BOX_ENGINE_LIB`、`BOX_PORT`。
 - 设备上模型服务**未启动**时：阶段C 自动跳过。此时按用户需求决定是否启动服务，启动后运行 `bash boxbench.sh collect` 补采。
 
@@ -129,6 +133,7 @@ python3 scripts/render_report.py <result.json> [输出.html] --device <型号>
 - C11 多模态（有 mmproj 时手动测）
 - C12 输出质量人工抽查评语
 - **C13 上下文阶梯**（模型标称窗口 > 32K 时建议跑 `ctxtest`，JSON 含 `ctxtest` 字段时渲染器自动出"上下文阶梯验证"章节并更新结论行长上下文能力）
+- **阶段 E 判读**（设备部署了 OpenClaw 时）：E3/E4 失败时结合 PLATFORM_NOTES 判断是否为已知 tool parser 问题（如 MiniCPM5 需专用 parser），并在报告中给出修复建议；新坑测后回写经验库
 - 阶段D 容量结论（**必须基于实测数据推导，禁止估算**）
 将补充项以编辑方式并入 HTML（保持四段式结构与样式不变）。
 
@@ -175,6 +180,7 @@ python3 scripts/render_report.py <result.json> [输出.html] --device <型号>
 6. 每台设备产出报告后，同时留存原始 JSON（供跨设备对比）
 7. **Chart.js 内嵌机制**：`scripts/vendor/chart.umd.min.js` 必须随 skill 分发（拷贝/打包/转移到其他 AI 工具时带上 scripts/ 整个目录）；渲染报告后检查产物无 `cdn.jsdelivr.net` 引用（内嵌成功）；若产物出现 CDN 引用说明 vendor 丢失，从 jsdelivr 下载 chart.umd.min.js（4.4.1）放回 scripts/vendor/ 后重渲染。产出报告必须离线可打开（内网/无外网环境是常态）
 8. **对外合规三原则**：① 报告默认脱敏后才可对外（`--no-redact` 版仅限内部排查）；② 对外发送必须经人工复核（第 5.5 步），助手不得自动外发；③ 过程留痕（`boxbench_run_*.log`）与原始 JSON 一并归档，确保结论可回溯、禁止摆拍
+9. **live 看板必须开给用户（不可豁免）**：凡真实测试（`auto`/`collect`/`multi`/Windows 采集），必须在 Agent 所在本机用 `boxbench_live.py` 包装，且按第 2 步三选一把看板交给用户（内置浏览器打开 / 系统浏览器弹出 / URL 原文发给用户）。"测试很快"、"复采"、"CI 之外的任何自判"都不构成跳过理由；仅 CI/无人值守或用户明说不用界面时可跳过。跳过即违规，用户无需追问就应已看到看板。
 
 ## 已验证的平台事实
 
