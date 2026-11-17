@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>BoxBench · 实时测试工作台</title>
+  <link rel="icon" href="icons/box.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css"><script src="app.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="./" aria-label="BoxBench 工作台"><span class="brand-icon"><img src="icons/box.svg" alt=""></span><b>BoxBench<span class="brand-period">.</span></b><span class="brand-label">测试工作台</span></a>
+    <div class="header-right"><span class="local-label"><img src="icons/lock.svg" alt="">本地运行</span><span class="version">SPEC 1.4</span></div>
+  </header>
+  <main>
+    <div class="heading">
+      <div><div class="eyebrow">BENCHMARK / LIVE WORKFLOW</div><h1>让每一步测试，<span>清晰可见。</span></h1><p id="run-title">正在连接测试进程…</p></div>
+      <div class="heading-actions"><span id="demo-tag" class="demo-tag" hidden>演示模式 · 非实测数据</span><button id="export" class="button"><img src="icons/download.svg" alt="">导出运行快照</button></div>
+    </div>
+    <div id="connection-warning" class="connection-warning" role="status" hidden>与本地测试进程的连接已断开，正在重连。当前显示最后一次收到的状态。</div>
+    <section class="summary" aria-label="执行概览">
+      <div class="summary-item"><span class="summary-label">运行状态</span><strong id="run-status" class="run-status">连接中</strong></div>
+      <div class="summary-item"><span class="summary-label">当前模型</span><strong id="model-name">等待识别</strong></div>
+      <div class="summary-item"><span class="summary-label">已处理步骤</span><strong><span id="completed">0</span><small> / 12</small></strong><div class="progress-track"><progress id="progress" max="12" value="0" aria-label="已处理步骤"></progress></div></div>
+      <div class="summary-item"><span class="summary-label">运行时间</span><strong id="elapsed" class="mono">00:00</strong></div>
+    </section>
+    <div class="workspace">
+      <section class="flow-panel">
+        <div class="panel-heading"><div><span class="panel-kicker">WORKFLOW</span><h2>测试流水线 <span class="count-badge">12</span></h2></div><span id="sync-label" class="sync-label">实时同步</span></div>
+        <div class="canvas-scroll"><div class="flow-canvas" id="flow-canvas"><canvas id="connections" aria-hidden="true"></canvas><div id="nodes" class="nodes"></div><div class="canvas-caption"><span>自动执行 · 按实际状态更新</span><span>点击节点查看详情</span></div></div></div>
+        <div class="flow-footer"><div class="legend"><span class="legend-done">已执行</span><span class="legend-running">运行中</span><span class="legend-pending">等待中</span><span class="legend-skipped">已跳过</span><span class="legend-failed">异常</span></div><span class="footer-note">步骤完成 ≠ 指标达标</span></div>
+      </section>
+      <aside class="detail-panel">
+        <div class="detail-top"><span class="panel-kicker">STEP INSPECTOR</span><span id="detail-index" class="mono">01 / 12</span></div>
+        <div class="detail-icon" id="detail-icon"><img src="icons/cpu.svg" alt=""></div>
+        <div class="detail-status" id="detail-status">等待开始</div><h2 id="detail-name">硬件指纹</h2><p class="detail-description" id="detail-description">识别芯片、内存、存储与加速器。</p>
+        <dl><div><dt>测试项</dt><dd id="detail-code" class="mono">A · hardware.scan</dd></div><div><dt>执行耗时</dt><dd id="detail-duration" class="mono">—</dd></div><div><dt>开始时间</dt><dd id="detail-start" class="mono">—</dd></div></dl>
+        <div class="detail-message"><img src="icons/activity.svg" alt=""><div><strong>执行动态</strong><p id="detail-message">等待测试进程上报状态。</p></div></div>
+        <button id="follow" class="button follow-button"><img src="icons/focus-2.svg" alt="">跟随当前步骤</button>
+        <div class="detail-bottom"><img src="icons/shield-check.svg" alt=""><p>状态来自测试脚本的实际事件。<br>性能指标以最终实测报告为准。</p></div>
+      </aside>
+    </div>
+    <section class="logs-panel">
+      <div class="logs-heading"><div class="log-title"><img src="icons/terminal-2.svg" alt=""><h2>执行日志</h2><span id="log-count" class="count-badge">0</span></div><div class="log-actions"><label><input type="checkbox" id="autoscroll" checked>自动滚动</label><button id="copy-logs" class="text-button">复制日志</button></div></div>
+      <div class="log-body" id="log-body" role="log" aria-label="测试执行日志"><p class="empty-log">等待测试进程输出…</p></div>
+    </section>
+    <footer class="page-footer"><span>BOXBENCH <span class="footer-divider">/</span> 从硬件到模型，每一步都有据可循。</span><span>LOCAL FIRST. EVIDENCE ALWAYS.</span></footer>
+  </main>
+</body>
+</html>
