@@ -35,6 +35,16 @@ ssh <user>@<IP> "md5sum ~/boxbench.sh"          # 设备
 
 ## 3. 设备端执行
 
+交互测试推荐在本机启动工作台，原命令放到 `--` 后面：
+
+```bash
+python3 scripts/boxbench_live.py -- ssh <user>@<IP> "bash ~/boxbench.sh"
+# Agent 内置浏览器：加 --no-open，读取 BOXBENCH_LIVE_URL 后在内置浏览器打开
+# CI 不保留页面：加 --linger 0；不要将演示模式 --demo 用于验收
+```
+
+**预期输出**：首先出现 `BOXBENCH_LIVE_URL=...`，网页中节点随真实测试更新，底部显示日志；结束后保留15分钟。原始命令仍可直接使用：
+
 ```bash
 ssh <user>@<IP> "bash ~/boxbench.sh"                    # 自动模式
 # 多模型:
