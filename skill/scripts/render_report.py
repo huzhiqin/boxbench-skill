@@ -293,6 +293,60 @@ def build_util_section(mc, tops_str="50 TOPS"):
          + "</div>")
     return t
 
+def build_agent_section(pe):
+    """阶段 E: OpenClaw Agent 框架集成测试分节。pe = JSON phase_e 段。
+    返回 HTML (无数据/跳过时返回空串)。结果独立于 C 通过率。"""
+    if not isinstance(pe, dict) or not pe:
+        return ""
+    if pe.get("skipped"):
+        reason_map = {
+            "openclaw_not_installed": "设备未安装 OpenClaw（安装后重跑 collect/multi 可补测）",
+            "openclaw_not_running": "OpenClaw CLI 存在但网关/进程未运行",
+            "not_linux_or_disabled": "非 Linux 环境（Windows 无 OpenClaw 部署形态）或显式跳过",
+        }
+        reason = reason_map.get(pe.get("skipped"), pe.get("skipped"))
+        return (f'<div class="sub" style="font-weight:600;color:var(--txt);margin-top:14px">'
+                f'Agent 框架集成（阶段 E · OpenClaw）</div><div class="note">⏭ 跳过 — {esc(reason)}</div>')
+    env = pe.get("env", {})
+    items = [
+        ("E2", "端到端单轮问答", "e2_chat", "经 OpenClaw 网关收发一轮对话（网关基本能力，必过）"),
+        ("E3", "单工具真实执行", "e3_tool", "calc 工具计算 137×24，验证调用→执行→回填完整循环"),
+        ("E4", "多步工具链", "e4_chain", "连续两次工具调用（15×8→+470），多步场景暴露 parser 循环问题"),
+        ("E5", "输出预算截断", "e5_budget", "500 字长文生成，检查是否被 OpenClaw 输出预算截断"),
+        ("E6", "纯文本回退", "e6_fallback", "无工具场景下 parser 回退纯文本路径"),
+    ]
+    rows = []
+    epass = 0; egraded = 0
+    for no, name, key, desc in items:
+        it = pe.get(key, {})
+        ok = it.get("ok", -1)
+        if ok == 1: epass += 1
+        if ok in (0, 1): egraded += 1
+        val_parts = []
+        if it.get("wall_s"): val_parts.append(f"{it['wall_s']}s")
+        if key == "e5_budget" and it.get("reply_len") is not None:
+            val_parts.append(f"回复 {it['reply_len']} 字符（要求 ≥{it.get('min_expected', 400)}）")
+        if it.get("reply"):
+            val_parts.append(esc(str(it["reply"])[:60]))
+        val = "｜".join(val_parts) if val_parts else ("未执行" if ok == -1 else "")
+        cls = "p-ok" if ok == 1 else ("p-no" if ok == 0 else "p-skip")
+        mark = "✅" if ok == 1 else ("❌" if ok == 0 else "—")
+        rows.append(f'<tr><td>{no}</td><td><b>{name}</b></td><td>{desc}</td>'
+                    f'<td>{val}</td><td class="c">{pill(mark + (" 通过" if ok==1 else (" 失败" if ok==0 else "")), cls)}</td></tr>')
+    rate = f'{epass}/{egraded}' if egraded else "—"
+    oc_ver = env.get("version") or "unknown"
+    env_line = f"OpenClaw {esc(str(oc_ver))} ｜ 网关端口 {env.get('port', '?')} ｜ 后端 API {esc(str(env.get('model_api', '?')))}"
+    # E2 失败提示
+    fail_note = ""
+    if pe.get("e2_chat", {}).get("ok") == 0:
+        fail_note = '<div class="note" style="color:#f85149">⚠ E2 失败：E3~E6 未执行（置 -1，不计入分母）。排查方向：OpenClaw 网关配置 / 后端模型连通性 / CLI 非交互模式参数。</div>'
+    return (f'<div class="sub" style="font-weight:600;color:var(--txt);margin-top:14px">'
+            f'Agent 框架集成（阶段 E · OpenClaw）<span class="pill p-mid" style="margin-left:8px">{rate} 通过</span></div>'
+            f'<div class="note" style="margin:4px 0 6px">{env_line}｜本节验证 C8 覆盖不到的<b>真实工具执行循环</b>，独立于 C 通过率。</div>'
+            f'{fail_note}'
+            f'<table style="margin:6px 0 8px"><thead><tr><th>#</th><th>测试项</th><th>方法</th>'
+            f'<th>实测结果</th><th class="c">判定</th></tr></thead><tbody>{"".join(rows)}</tbody></table>')
+
 def accel_short(acc):
     """加速栈一行摘要: 过滤表头/空值, 优先取含数字的型号词"""
     toks = [t for t in str(acc or "").replace(",", " ").split()
@@ -746,6 +800,20 @@ def main():
         for r in rendered:
             tmax = (r[3].get("phase_c", {}) or {}).get("session_temp_max")
             html += f'<td class="c">{f"{tmax:.1f}℃" if isinstance(tmax,(int,float)) and tmax>0 else "—"}</td>'
+        html += f'</tr>\n<tr><td><b>Agent 集成 E（OpenClaw）</b></td>'
+        for r in rendered:
+            pe = r[3].get("phase_e") or {}
+            if pe.get("skipped"):
+                cell = '<span class="skip">⏭ 跳过</span>'
+            elif pe:
+                keys = ["e2_chat", "e3_tool", "e4_chain", "e5_budget", "e6_fallback"]
+                vals = [int(pe.get(k, {}).get("ok", -1)) for k in keys]
+                np_ = sum(1 for v in vals if v == 1); ng = sum(1 for v in vals if v in (0, 1))
+                cls = "ok" if ng and np_ == ng else ("no" if ng and np_ < ng / 2 else "mid")
+                cell = f'<span class="{cls}">{np_}/{ng}</span>' if ng else '<span class="skip">—</span>'
+            else:
+                cell = '<span class="skip">—</span>'
+            html += f'<td class="c">{cell}</td>'
         html += f'</tr>\n<tr><td><b>通过率</b></td>'
         for r in rendered:
             s = r[2]
@@ -803,6 +871,9 @@ def main():
         util_html = build_util_section(m.get("phase_c", {}), tops)
         if util_html:
             html += util_html
+        agent_html = build_agent_section(m.get("phase_e") or (d.get("phase_e") if not is_multi else None))
+        if agent_html:
+            html += agent_html
         if is_multi:
             html += "</div></div>"
 
