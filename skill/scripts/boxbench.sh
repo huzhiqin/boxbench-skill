@@ -19,10 +19,13 @@
 #     BOX_ENGINE    引擎 llama-server 路径 (默认 /home/dev/houmoAI/houmo/houmo-HLIELLama-xh2/bin/llama-server)
 #     BOX_ENGINE_LIB 引擎 lib 目录 (默认 /home/dev/houmoAI/houmo/houmo-HLIELLama-xh2/lib)
 #     BOX_PORT      服务端口 (默认 17701)
+#     BOX_OPENCLAW       openclaw CLI 路径 (阶段E, 默认自动探测 PATH)
+#     BOX_OPENCLAW_PORT  OpenClaw 网关端口 (阶段E, 默认 18789)
+#     BOX_AGENT_SKIP=1   强制跳过阶段E Agent 集成测试
 # 产出: ./boxbench_results_{YYYYMMDD_HHMMSS}.json (stdout 输出路径)
 # =============================================================
-VERSION="1.6"
-SPEC_VERSION="1.4"
+VERSION="1.7"
+SPEC_VERSION="1.5"
 OUT="boxbench_results_$(date +%Y%m%d_%H%M%S).json"
 # 运行日志落盘 (过程留痕: 每步时间戳, 供复核/复盘/证明真实执行)
 RUNLOG="boxbench_run_$(date +%Y%m%d_%H%M%S).log"
@@ -546,9 +549,10 @@ phase_multi() {
     fi
     # 阶段C测试
     phase_collect
-    # 组装该模型的结果 (engine 配置段与测试结果并列)
+    # 组装该模型的结果 (engine 配置段与测试结果并列; 阶段E Agent 集成与该模型绑定)
     if [ $FIRST -eq 1 ]; then echo ",\"models\":["; FIRST=0; else echo ","; fi
-    echo "{\"name\":\"$MNAME\",\"path\":\"$MPATH\",\"c1_load_s\":$LOAD_S,\"engine\":{$(collect_engine_info "$MPATH")},\"phase_c\":$(cat "$TMPD/phasec_fragment.json")}"
+    progress agent running "Agent 框架集成测试 (OpenClaw, 模型: $MNAME)"
+    echo "{\"name\":\"$MNAME\",\"path\":\"$MPATH\",\"c1_load_s\":$LOAD_S,\"engine\":{$(collect_engine_info "$MPATH")},\"phase_c\":$(cat "$TMPD/phasec_fragment.json"),\"phase_e\":$(phase_agent)}"
   done
   [ $FIRST -eq 0 ] && echo "]"
 }
@@ -642,6 +646,115 @@ except Exception as e:
   stop_model_service
 }
 
+# ---------- 阶段 E: OpenClaw Agent 框架集成测试 (Linux 默认, 未装自动跳过) ----------
+# C8 只验证"模型会发起 tool_call"(API 层模拟); 阶段 E 验证"模型在 OpenClaw 框架里真能把活干成":
+# 真实工具执行循环 / 多步链 / 输出预算截断 / parser 回退路径。
+# 环境变量:
+#   BOX_OPENCLAW       openclaw 可执行文件路径 (默认自动探测 PATH 中 openclaw)
+#   BOX_OPENCLAW_PORT  OpenClaw 网关端口 (默认 18789, 探测用)
+#   BOX_AGENT_SKIP=1   强制跳过阶段 E
+# 输出: JSON 对象 {env, e2_chat, e3_tool, e4_chain, e5_budget, e6_fallback}
+# 跨平台超时: Linux 用 timeout, macOS/BSD 无 timeout 时退化为裸调用 (设备为 Linux, 不影响产线)
+if command -v timeout >/dev/null 2>&1; then
+  OC_TIMEOUT() { timeout "$@"; }
+else
+  OC_TIMEOUT() { local t="$1"; shift; "$@"; }
+fi
+oc_send() { # $1=消息文本 $2=超时s -> stdout: openclaw 响应; 副作用: OC_WALL_S
+  local MSG="$1" TO="${2:-120}"
+  local T0=$(date +%s.%N)
+  local OUT
+  OUT=$(OC_TIMEOUT "$TO" "$OPENCLAW" --non-interactive --message "$MSG" 2>>"$RUNLOG" || echo "__OC_FAILED__")
+  local T1=$(date +%s.%N)
+  OC_WALL_S=$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}')
+  echo "$OUT"
+}
+
+phase_agent() {
+  # 前置: 仅 Linux; Windows 无 OpenClaw 部署形态
+  if [ "$(uname -s)" != "Linux" ] || [ "${BOX_AGENT_SKIP:-0}" = "1" ]; then
+    echo "{\"skipped\":\"not_linux_or_disabled\"}"
+    progress agent skipped "非 Linux 环境或 BOX_AGENT_SKIP=1, 跳过 Agent 集成测试"
+    return
+  fi
+  OPENCLAW="${BOX_OPENCLAW:-$(command -v openclaw 2>/dev/null)}"
+  OC_PORT="${BOX_OPENCLAW_PORT:-18789}"
+  # E1: 网关/CLI 探活
+  progress agent running "检测 OpenClaw 部署 (CLI + 网关端口 $OC_PORT)"
+  local OC_VER="" OC_PROC=""
+  if [ -z "$OPENCLAW" ]; then
+    echo "{\"skipped\":\"openclaw_not_installed\"}"
+    progress agent skipped "未检测到 openclaw CLI, 跳过 (安装后重跑或 BOX_OPENCLAW 指定路径)"
+    return
+  fi
+  OC_VER=$(OC_TIMEOUT 10 "$OPENCLAW" --version 2>/dev/null | head -1)
+  OC_PROC=$(pgrep -fc "openclaw" 2>/dev/null || echo 0)
+  local GW_OK=0
+  # 网关端口探测: 通/进程存在 均视为已部署 (CLI 模式可能不需要常驻网关)
+  if ss -tln 2>/dev/null | grep -q ":$OC_PORT " || [ "$OC_PROC" -gt 0 ]; then GW_OK=1; fi
+  if [ "$GW_OK" != "1" ]; then
+    echo "{\"skipped\":\"openclaw_not_running\",\"cli\":\"$OPENCLAW\",\"version\":\"$OC_VER\"}"
+    progress agent skipped "openclaw CLI 存在但网关/进程未运行"
+    return
+  fi
+  progress agent done "OpenClaw 已部署 (v${OC_VER:-unknown}, 进程 ${OC_PROC})"
+  log "阶段E: OpenClaw 集成测试开始 (CLI=$OPENCLAW, ver=$OC_VER)"
+  # 注意: E2 失败时的提前收尾用 AGENT_E2_FAIL 标志控制, 不在重定向块内 return
+  # (块内 return 会跳过块外的 cat, 导致 stdout 无输出)
+  local AGENT_E2_FAIL=0
+  {
+    echo "{"
+    echo "\"env\":{\"cli\":\"$OPENCLAW\",\"version\":\"$OC_VER\",\"port\":$OC_PORT,\"procs\":$OC_PROC,\"model_api\":\"$API\"}",
+    # E2: 端到端单轮问答 (走 OpenClaw 网关, 记端到端耗时 vs 裸 API C2 对比开销)
+    progress agent running "E2: 端到端单轮问答"
+    local R EOK
+    R=$(oc_send "请用一句话回答:1+1等于几?" 90)
+    EOK=0; [ -n "$R" ] && [ "$R" != "__OC_FAILED__" ] && EOK=1
+    echo "\"e2_chat\":{\"ok\":$EOK,\"wall_s\":$OC_WALL_S,\"reply\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1][:100], ensure_ascii=False))" "$R" 2>/dev/null || echo '""')}"
+    if [ "$EOK" != "1" ]; then
+      # 网关通但对话失败 → 后续工具测试大概率也失败, 直接收尾 (e3~e6 置 -1 不计分)
+      echo ",\"e3_tool\":{\"ok\":-1},\"e4_chain\":{\"ok\":-1},\"e5_budget\":{\"ok\":-1},\"e6_fallback\":{\"ok\":-1}"
+      progress agent failed "E2 端到端问答失败, 阶段E 提前结束"
+      AGENT_E2_FAIL=1
+    fi
+    if [ "$AGENT_E2_FAIL" != "1" ]; then
+    progress agent done "E2 通过 (${OC_WALL_S}s)"
+    # E3: 单工具调用 (注册真实工具, 验证执行循环: 调用→解析→执行→回填→生成)
+    progress agent running "E3: 单工具真实执行"
+    R=$(oc_send "请调用 calc 工具计算 137*24 的结果,并告诉我答案" 120)
+    # 成功判据: 响应含正确结果 3288 (工具真执行了) 而非模型口算(可能对也可能没用工具, 以结果为准)
+    local E3=0; echo "$R" | grep -q "3288" && E3=1
+    echo ",\"e3_tool\":{\"ok\":$E3,\"wall_s\":$OC_WALL_S,\"reply\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1][:150], ensure_ascii=False))" "$R" 2>/dev/null || echo '""')}"
+    [ "$E3" = "1" ] && progress agent done "E3 通过: 工具结果 3288 正确回填" || progress agent failed "E3 未见工具执行结果 3288"
+    # E4: 多步工具链 (需连续两次调用才能完成的任务, 暴露 parser 多步问题)
+    progress agent running "E4: 多步工具链 (连续两次调用)"
+    R=$(oc_send "请先用 calc 工具计算 15*8, 再用 calc 工具把上一步结果加上 470, 最后告诉我最终数字" 180)
+    # 15*8=120, 120+470=590; 判据: 最终响应含 590
+    local E4=0; echo "$R" | grep -q "590" && E4=1
+    echo ",\"e4_chain\":{\"ok\":$E4,\"wall_s\":$OC_WALL_S,\"reply\":$(python3 -c "import json,sys; print(json.dumps(sys.argv[1][:150], ensure_ascii=False))" "$R" 2>/dev/null || echo '""')}"
+    [ "$E4" = "1" ] && progress agent done "E4 通过: 多步链最终结果 590 正确" || progress agent failed "E4 多步链未得到 590"
+    # E5: 输出预算 (长回复是否被 OpenClaw 输出预算截断 — 实战踩坑项)
+    progress agent running "E5: 输出预算截断检查"
+    R=$(oc_send "请写一篇500字左右的短文, 主题: 智能制造的未来" 150)
+    local RLEN
+    RLEN=$(python3 -c "import sys; print(len(sys.argv[1]))" "$R" 2>/dev/null || echo 0)
+    # 判据: 响应长度 ≥400 字符视为未被严重截断 (500字要求 + 余量); 记录实际长度供人工判读
+    local E5=0; [ "$RLEN" -ge 400 ] 2>/dev/null && E5=1
+    echo ",\"e5_budget\":{\"ok\":$E5,\"reply_len\":$RLEN,\"min_expected\":400}"
+    [ "$E5" = "1" ] && progress agent done "E5 通过: 长回复未截断 (${RLEN} 字符)" || progress agent failed "E5 疑似输出截断 (${RLEN} 字符 < 400)"
+    # E6: 非流式容错 (不需要工具的问题, parser 回退纯文本路径)
+    progress agent running "E6: 纯文本回退路径"
+    R=$(oc_send "中国的首都是哪座城市?" 90)
+    local E6=0; echo "$R" | grep -q "北京" && E6=1
+    echo ",\"e6_fallback\":{\"ok\":$E6,\"wall_s\":$OC_WALL_S}"
+    [ "$E6" = "1" ] && progress agent done "E6 通过" || progress agent failed "E6 未见正确回答"
+    fi  # AGENT_E2_FAIL 条件结束
+    echo "}"
+  } > "$TMPD/phasee_fragment.json"
+  progress agent done "阶段E 采集完成"
+  cat "$TMPD/phasee_fragment.json"
+}
+
 # ---------- 主流程 ----------
 MODE="${1:-auto}"
 if [ "$MODE" = "classify" ]; then
@@ -666,6 +779,9 @@ else
     phase_collect
     echo ",\"engine\":{$(collect_engine_info)}" >> "$TMPD/out.json"
     echo ",\"phase_c\":$(cat "$TMPD/phasec_fragment.json")" >> "$TMPD/out.json"
+    # 阶段E: OpenClaw Agent 集成 (Linux 默认执行, 未装/非Linux 自动跳过)
+    progress agent running "Agent 框架集成测试 (OpenClaw)"
+    echo ",\"phase_e\":$(phase_agent)" >> "$TMPD/out.json"
   fi
   if [ "$MODE" = "multi" ]; then
     # phase_multi 输出 (models 数组) 直接写入 out.json
