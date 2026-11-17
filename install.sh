@@ -53,6 +53,8 @@ fetch() { # $1=相对路径 $2=目标路径
 
 FILES=(
   "SKILL.md"
+  "RUNBOOK.md"
+  "AUTOMATION.md"
   "SPEC.md"
   "HARDWARE_MODEL_MATRIX.md"
   "PLATFORM_NOTES.md"
@@ -60,6 +62,33 @@ FILES=(
   "scripts/boxbench.sh"
   "scripts/boxbench_windows.py"
   "scripts/boxbench_exp.py"
+  "scripts/boxbench_live.py"
+  "scripts/live/index.html"
+  "scripts/live/style.css"
+  "scripts/live/app.js"
+  "scripts/live/icons/LICENSE"
+  "scripts/live/icons/activity.svg"
+  "scripts/live/icons/adjustments-horizontal.svg"
+  "scripts/live/icons/align-left.svg"
+  "scripts/live/icons/arrows-split.svg"
+  "scripts/live/icons/bolt.svg"
+  "scripts/live/icons/box.svg"
+  "scripts/live/icons/chart-dots.svg"
+  "scripts/live/icons/check.svg"
+  "scripts/live/icons/clock.svg"
+  "scripts/live/icons/cpu.svg"
+  "scripts/live/icons/download.svg"
+  "scripts/live/icons/exclamation-mark.svg"
+  "scripts/live/icons/file-check.svg"
+  "scripts/live/icons/focus-2.svg"
+  "scripts/live/icons/loader-2.svg"
+  "scripts/live/icons/lock.svg"
+  "scripts/live/icons/messages.svg"
+  "scripts/live/icons/minus.svg"
+  "scripts/live/icons/shield-check.svg"
+  "scripts/live/icons/stack-2.svg"
+  "scripts/live/icons/terminal-2.svg"
+  "scripts/live/icons/tool.svg"
   "scripts/render_report.py"
   "scripts/vendor/chart.umd.min.js"
 )
@@ -88,7 +117,13 @@ IS_UPDATE=0
 # ---- 版本对比（远端不可达时不阻塞安装）----
 local_version() { grep -m1 '^version:' "${TARGET_DIR}/SKILL.md" 2>/dev/null | awk '{print $2}' || echo "none"; }
 remote_version() {
-  local s url v
+  local s url v src_dir
+  # Match fetch(): a local checkout is authoritative for local installation.
+  src_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd)" || src_dir=""
+  if [[ -n "$src_dir" && -f "${src_dir}/skill/SKILL.md" ]]; then
+    awk '/^version:/{print $2;exit}' "${src_dir}/skill/SKILL.md"
+    return
+  fi
   for s in "${SOURCES[@]}"; do
     url="$(source_url "$s" "SKILL.md")" || continue
     v=$(curl -fsSL --connect-timeout 5 --max-time 15 "${url}" 2>/dev/null | grep -m1 '^version:' | awk '{print $2}') && [ -n "$v" ] && { echo "$v"; return; }
@@ -115,7 +150,7 @@ else
 fi
 
 # ---- 下载全部文件 ----
-mkdir -p "${TARGET_DIR}/scripts/vendor"
+mkdir -p "${TARGET_DIR}/scripts/vendor" "${TARGET_DIR}/scripts/live/icons"
 for f in "${FILES[@]}"; do
   echo "  ↓ $f"
   fetch "$f" "${TARGET_DIR}/$f"
