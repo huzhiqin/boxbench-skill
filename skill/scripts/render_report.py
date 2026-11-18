@@ -111,6 +111,40 @@ border-radius:999px;padding:1px 12px;font-size:12.5px;font-weight:700}
 
 def esc(x): return H.escape(str(x if x is not None else ""))
 
+def infer_model_name(m):
+    """从模型记录自动反解可读模型名（--model 未给出时的兜底，v1.11.0 起）。
+    优先级: weight 名称清洗 > 权重文件名去扩展 > path 基名。
+    例: HiModel_xh2_qwen3.6-35b-a3b_w4a8_256_256k_b1_1chip_2cores_v1.5.0_20260824.gguf
+        → Qwen3.6-35B-A3B(W4A8)（量化段之前的权重名段，连字符转空格后按词首大写）。"""
+    import re as _re
+    eng = m.get("engine") or {}
+    cmd = str(eng.get("engine_cmd") or "")
+    path = ""
+    mm = _re.search(r'(?:-m|--model)[= ](\S+)', cmd)
+    if mm:
+        path = mm.group(1)
+    path = path or str(m.get("path") or "")
+    if not path or "<model>" in path:
+        return ""
+    base = _re.split(r"[\\/]", path)[-1]
+    stem = _re.sub(r"\.(gguf|safetensors|onnx)$", "", base, flags=_re.I)
+    # 清洗: 去掉 HiModel_xh2_ 前缀、量化段(w4a8/Q4_K_M/int8...)及之后的规格尾段
+    stem = _re.sub(r"^HiModel[_-][a-z0-9]+[_-]", "", stem, flags=_re.I)
+    stem = _re.sub(r"[_-](?:w\d+a\d+|Q\d_[A-Z0-9_]+|iq\d_[a-z0-9_]+|int\d+)[_-].*$", "", stem, flags=_re.I)
+    stem = stem.replace("-", " ").replace("_", " ").strip()
+    if not stem:
+        return ""
+    def cap(tok):
+        # 字母+数字混合(35b/a3b/mtp/w4a8) → 全大写: 35B/A3B/MTP/W4A8
+        # 纯字母且已含大写(LLaMA) → 保留专有名; 纯小写单词(qwen) → 词首大写(Qwen)
+        if _re.search(r"\d", tok):
+            return tok.upper()
+        if _re.search(r"[A-Z]", tok):
+            return tok
+        return tok[:1].upper() + tok[1:]
+    return " ".join(cap(t) for t in stem.split() if t)
+
+
 # ============ 脱敏 (默认开启; 对齐 boxbench_exp.py 的脱敏口径) ============
 _RE_IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _RE_IPV6 = re.compile(r"\b(?:[a-f0-9]{1,4}:){2,7}[a-f0-9]{1,4}\b", re.I)
@@ -575,7 +609,15 @@ def main():
 
     # 单模型且无 models 数组 → 沿用 phase_c
     if not is_multi:
-        models = [{"name": model, "phase_c": c}]
+        models = [{"name": model, "phase_c": c, "engine": d.get("engine", {})}]
+        # 自动反解真实模型名：--model 未显式给出时，从引擎启动命令行的 -m 参数提取。
+        # 背景（2026-11-18 修复）：collect 模式下模型名曾硬编码为"预装模型"，与分档推荐清单
+        # 模糊匹配必然落空，报告误报"本轮无推荐清单内模型被实测"。数据无误，命名有误。
+        if model == "预装模型":
+            inferred = infer_model_name(models[0])
+            if inferred:
+                models[0]["name"] = inferred
+                model = inferred
 
     # ---- 加速卡规格识别 ----
     accel_str = str(a.get("accelerator", ""))
@@ -725,10 +767,16 @@ def main():
     if cls:
         # 实测模型名与推荐清单名模糊匹配（去空格/大小写对齐）
         def norm(x): return str(x).replace(" ", "").lower()
+        # 匹配兜底: 再去掉连字符/点/括号, 使 "Qwen3.6 35B A3B" 可命中 "Qwen3.6-35B-A3B(W4A8)"
+        def norm_loose(x):
+            import re as _re
+            return _re.sub(r"[-.()（）]", "", norm(x))
         tested_map = {}
         for mname, trows, stats, m in rendered:
             for rec in cls.get("recommended_models", []):
-                if norm(rec) == norm(mname) or norm(rec) in norm(mname) or norm(mname) in norm(rec):
+                lr, lm = norm_loose(rec), norm_loose(mname)
+                if (norm(rec) == norm(mname) or norm(rec) in norm(mname) or norm(mname) in norm(rec)
+                        or lr == lm or lr in lm or lm in lr):
                     tested_map[rec] = stats
                     break
         html += "<h2>二、硬件分档与模型匹配</h2><div class=\"panel\">"
