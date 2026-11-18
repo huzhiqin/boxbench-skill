@@ -4,6 +4,7 @@
 python3 boxbench_live.py -- ssh user@device 'bash ~/boxbench.sh collect'
 python3 boxbench_live.py -- python boxbench_windows.py --all
 python3 boxbench_live.py --demo
+python3 boxbench_live.py --replay boxbench_live_20261118_103400_xxx.jsonl   # 回放历史测试
 """
 from __future__ import annotations
 
@@ -170,6 +171,49 @@ def make_server(state, port):
     return server, "http://127.0.0.1:%d/%s/" % (server.server_port, token)
 
 
+def replay_run(state, journal, stop, speed=1.0):
+    """按真实时间轴回放 journal 中的事件流（v1.11.0 新增）。
+    背景：collect 单模型全程约 1 分钟，用户浏览器打开晚只能看到最终静态画面，
+    看起来"没有变化"。回放模式让用户随时重看完整过程。
+    journal 每行: {"time": <unix秒>, <event>}；事件间隔按 speed 倍速压缩（≤2s/事件）。"""
+    try:
+        lines = [json.loads(l) for l in journal.read_text(encoding="utf-8").splitlines() if l.strip()]
+    except (OSError, ValueError) as exc:
+        print("无法读取回放文件: %s" % exc, file=sys.stderr)
+        state.finish(1)
+        return
+    if not lines:
+        state.finish(1)
+        return
+    t0 = lines[0].get("time", 0)
+    prev_t = t0
+    while not stop.is_set():
+        # 先重置到初始态再回放
+        with state.lock:
+            state.data.update(started=time.time(), ended=None, status="running",
+                              current=None, logs=[], models=[])
+            for s in state.data["stages"]:
+                s.update(status="pending", started=None, ended=None, detail="")
+            state.data["sequence"] += 1
+        prev_t = t0
+        for rec in lines:
+            if stop.is_set():
+                return
+            t = rec.pop("time", prev_t)
+            delay = min(2.0, max(0.0, (t - prev_t) / max(speed, 0.1)))
+            prev_t = t
+            if stop.wait(delay):
+                return
+            if rec.get("type") in ("plan", "model"):
+                state.event(rec)
+            else:
+                state.event(rec)
+            state.line("[回放] " + json.dumps(rec, ensure_ascii=False)[:200])
+        state.finish(0)
+        if stop.wait(8):  # 停在最终态 8 秒后循环重放
+            return
+
+
 def demo_run(state, stop):
     while not stop.is_set():
         with state.lock:
@@ -194,6 +238,8 @@ def demo_run(state, stop):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--demo", action="store_true", help="仅演示动效，不运行测试")
+    parser.add_argument("--replay", metavar="JOURNAL", help="回放历史测试的事件记录（boxbench_live_*.jsonl），按真实时间轴重演全过程")
+    parser.add_argument("--replay-speed", type=float, default=1.0, help="回放倍速（默认 1.0；2.0 = 两倍速）")
     parser.add_argument("--no-open", action="store_true", help="由 Agent 在内置浏览器打开输出的 URL")
     parser.add_argument("--port", type=int, default=0, help="默认随机空闲端口")
     parser.add_argument("--title", default="AI Box 标准化实测")
@@ -201,9 +247,15 @@ def main():
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if not args.demo and not command:
-        parser.error("请在 -- 后提供测试命令，或使用 --demo")
-    journal = None if args.demo else Path("boxbench_live_%s.jsonl" % dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
+    if not args.demo and not args.replay and not command:
+        parser.error("请在 -- 后提供测试命令，或使用 --demo / --replay <journal>")
+    journal = None
+    if args.replay:
+        journal = Path(args.replay)
+        if not journal.is_file():
+            parser.exit(2, "回放文件不存在: %s\n" % journal)
+    elif not args.demo:
+        journal = Path("boxbench_live_%s.jsonl" % dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f"))
     state = RunState(args.title, args.demo, journal)
     try:
         server, url = make_server(state, args.port)
@@ -219,6 +271,10 @@ def main():
     try:
         if args.demo:
             threading.Thread(target=demo_run, args=(state, stop), daemon=True).start()
+            while not stop.wait(1):
+                pass
+        elif args.replay:
+            threading.Thread(target=replay_run, args=(state, journal, stop, args.replay_speed), daemon=True).start()
             while not stop.wait(1):
                 pass
         else:
