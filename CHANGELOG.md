@@ -243,3 +243,8 @@ All notable changes to BoxBench Skill will be documented in this file.
 
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+
+## [1.10.4] - 2026-11-18
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
