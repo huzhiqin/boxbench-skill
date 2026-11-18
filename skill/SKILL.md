@@ -1,7 +1,7 @@
 ---
 name: box-bench
 description: 工控算力盒子（AI Box）标准化实测。拿到任何新盒子时触发：自动采集硬件指纹、环境盘点、跑模型实测（解码速度/长上下文/并发/工具调用/多轮），按 SPEC 统一标准产出 HTML 报告。Linux 设备自动加测 OpenClaw Agent 框架集成（工具执行循环/多步链/输出预算）。支持预装模型和指定模型下发测试（国内模型聚焦，含模型合规性验证），支持多模型顺序测试与横向对比报告。触发词：测盒子、盒子测试、工控盒实测、AI Box benchmark、设备验收。
-version: 1.10.5
+version: 1.10.6
 ---
 
 # BoxBench — 工控算力盒子标准化实测 Skill
@@ -122,7 +122,7 @@ bash boxbench.sh ctxtest "模型名|模型文件绝对路径" ["32k,128k,max"]
 - `multi` 模式下 boxbench.sh 自动管理服务生命周期：每模型启动前做**资源预检**（磁盘可用 < 文件+2GB → `⏭ 磁盘空间不足，暂未测试`；权重×1.15 > 推理内存 → `⏭ 内存不足，暂未测试`，均跳过并在报告列出原因），通过后自动起服务计时（C1）→ 跑阶段C → 停服务换下一个。
 - 速度口径（v1.2 起）：C2/C4/并发 均记录 API `usage.prompt_tokens/completion_tokens`，解码速度 = completion_tokens/耗时（**tok/s，usage 口径**）；旧数据自动降级"估算（字/s）"并标注。
 - **NPU 算力利用率（v1.5 起，自动）**：阶段C 全程 1s 间隔采样加速卡（mthreads-gmi -q / nvidia-smi），按 空闲基线/C2解码/C4 prefill/并发/全场 分段汇总利用率均值/峰值/显存%/温度峰值。判读口径：解码段利用率低 = 访存受限（LLM 共性，正常）；**prefill 段利用率 = 计算密集段真实算力发挥**。报告自动出"算力利用率分析"章节。无采样能力设备（无管理工具）自动跳过，不影响其他测试。
-- **Agent 框架集成（SPEC v1.5 起，Linux 默认自动）**：阶段C 结束后自动跑阶段 E（OpenClaw 集成测试，E1 网关探活 / E2 端到端单轮 / E3 单工具真实执行 / E4 多步工具链 / E5 输出预算截断 / E6 纯文本回退）。设备未装 OpenClaw 或非 Linux 自动跳过并标注，不阻塞其他测试。`BOX_OPENCLAW`（CLI 路径）、`BOX_OPENCLAW_PORT`（网关端口，默认 18789）、`BOX_AGENT_SKIP=1`（强制跳过）可控制。**C8 通过 ≠ Agent 能用**——阶段 E 才验证真实工具执行循环。结果独立分节，不计入 C 通过率。
+- **Agent 框架集成（SPEC v1.5 起，Linux 默认自动）**：阶段C 结束后自动跑阶段 E（OpenClaw 集成测试，E0 自动安装 / E1 网关探活 / E2 端到端单轮 / E3 单工具真实执行 / E4 多步工具链 / E5 输出预算截断 / E6 纯文本回退）。**设备未装 OpenClaw 时自动安装**（官方 install.sh `--no-onboard`，约 1~3 分钟；失败才跳过并留日志，`BOX_AGENT_AUTOINSTALL=0` 关闭自动安装）。非 Linux 自动跳过并标注，不阻塞其他测试。`BOX_OPENCLAW`（CLI 路径）、`BOX_OPENCLAW_PORT`（网关端口，默认 18789）、`BOX_AGENT_SKIP=1`（强制跳过）可控制。**C8 通过 ≠ Agent 能用**——阶段 E 才验证真实工具执行循环。结果独立分节，不计入 C 通过率。
 - 环境变量可覆盖默认路径：`BOX_API`（默认 http://127.0.0.1:17701）、`BOX_ENGINE`（llama-server 路径）、`BOX_ENGINE_LIB`、`BOX_PORT`。
 - 设备上模型服务**未启动**时：阶段C 自动跳过。此时按用户需求决定是否启动服务，启动后运行 `bash boxbench.sh collect` 补采。
 
