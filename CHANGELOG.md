@@ -256,5 +256,24 @@ All notable changes to BoxBench Skill will be documented in this file.
 
 ## [1.10.6] - 2026-11-18
 
+### Added
+- **阶段 E0：OpenClaw 自动安装**（SPEC v1.6 / boxbench.sh v1.8）——Linux 未装 OpenClaw 时自动执行官方 `openclaw.ai/install.sh --no-onboard`（约1~3分钟），装完刷新 PATH 重探测；失败才跳过（新 skipped 原因 `openclaw_autoinstall_failed`）。`BOX_AGENT_AUTOINSTALL=0` 恢复"未装即跳过"旧行为
+- **版本自更新机制**：新增 `scripts/check_update.sh`（本地 vs GitHub/Gitee 版本对比，`--verbose`/`--upgrade`；离线输出 unknown 不阻塞）；SKILL.md 新增第 0.5 步"实测前版本自检"；boxbench.sh 设备端后台异步自检（24h 缓存，脚本过旧时日志提示）
+
+### Fixed
+- **报告"本轮无推荐清单内模型被实测"误报**（2026-11-18 实测反馈）：collect 模式模型名曾硬编码"预装模型"，与分档推荐清单匹配必落空。渲染器新增 `infer_model_name`——从引擎启动命令行 `-m` 参数反解真实模型名（HiModel_xh2_qwen3.6-35b-a3b_w4a8_... → Qwen3.6 35B A3B）；分档匹配增加 norm_loose（去连字符/点/括号）兜底。已用真实数据验证：推荐表正确显示"✅ 已测（100% 通过）"
+- boxbench_live.py 日志时间戳从完整日期简化为时分秒（可读性）
+
+### Changed
+- **看板必须在测试命令启动前打开**（硬性规则 #9 追加）：collect 全程仅约 1 分钟，先跑后开看板用户只会看到最终静态画面（教训：2026-11-18 用户反馈"看板没有任何变化"）
+- **正式测试用 multi，不用 collect**（新增硬性规则 #12）：multi 是唯一能计时 C1 加载耗时的单模型模式；collect 仅限"服务外部启动且无法重启"的补采场景，报告须标注"补采"
+- **新增硬性规则 #10**：用户质疑看板"没进展"时用 `--replay <journal>` 按真实时间轴重演，不重跑真实测试（boxbench_live.py 新增 `--replay`/`--replay-speed`）
+- **新增硬性规则 #11**：报告实测模型名必须真实，禁止"预装模型"等占位名入正式报告
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+
+## [1.10.7] - 2026-11-18
+
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
