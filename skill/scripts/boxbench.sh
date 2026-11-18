@@ -22,10 +22,11 @@
 #     BOX_OPENCLAW       openclaw CLI 路径 (阶段E, 默认自动探测 PATH)
 #     BOX_OPENCLAW_PORT  OpenClaw 网关端口 (阶段E, 默认 18789)
 #     BOX_AGENT_SKIP=1   强制跳过阶段E Agent 集成测试
+#     BOX_AGENT_AUTOINSTALL=0  关闭 OpenClaw 自动安装 (默认: Linux 未装时自动 install.sh 安装)
 # 产出: ./boxbench_results_{YYYYMMDD_HHMMSS}.json (stdout 输出路径)
 # =============================================================
 VERSION="1.7"
-SPEC_VERSION="1.5"
+SPEC_VERSION="1.6"
 OUT="boxbench_results_$(date +%Y%m%d_%H%M%S).json"
 # 运行日志落盘 (过程留痕: 每步时间戳, 供复核/复盘/证明真实执行)
 RUNLOG="boxbench_run_$(date +%Y%m%d_%H%M%S).log"
@@ -678,6 +679,7 @@ except Exception as e:
 #   BOX_OPENCLAW       openclaw 可执行文件路径 (默认自动探测 PATH 中 openclaw)
 #   BOX_OPENCLAW_PORT  OpenClaw 网关端口 (默认 18789, 探测用)
 #   BOX_AGENT_SKIP=1   强制跳过阶段 E
+#   BOX_AGENT_AUTOINSTALL=0  关闭 OpenClaw 自动安装 (默认 Linux 未装时自动安装)
 # 输出: JSON 对象 {env, e2_chat, e3_tool, e4_chain, e5_budget, e6_fallback}
 # 跨平台超时: Linux 用 timeout, macOS/BSD 无 timeout 时退化为裸调用 (设备为 Linux, 不影响产线)
 if command -v timeout >/dev/null 2>&1; then
@@ -704,6 +706,26 @@ phase_agent() {
   fi
   OPENCLAW="${BOX_OPENCLAW:-$(command -v openclaw 2>/dev/null)}"
   OC_PORT="${BOX_OPENCLAW_PORT:-18789}"
+  # E0: 未装 OpenClaw 时主动安装 (v1.11.0; BOX_AGENT_AUTOINSTALL=0 关闭)
+  # 官方安装: curl -fsSL https://openclaw.ai/install.sh | bash (自动装 Node 24+/依赖, 含 --no-onboard 跳过交互)
+  if [ -z "$OPENCLAW" ] && [ "${BOX_AGENT_AUTOINSTALL:-1}" = "1" ]; then
+    progress agent running "未检测到 openclaw, 正在自动安装 (openclaw.ai/install.sh, 约1-3分钟)"
+    log "阶段E: 未装 OpenClaw, 开始自动安装"
+    if curl -fsSL --proto '=https' --tlsv1.2 --max-time 300 https://openclaw.ai/install.sh | bash -s -- --no-onboard >>"$RUNLOG" 2>&1; then
+      # 安装后刷新 PATH 再探测 (npm global / ~/.local/bin 均可能)
+      for PD in "$HOME/.local/bin" "$HOME/.npm-global/bin" /usr/local/bin; do
+        case ":$PATH:" in *":$PD:"*) ;; *) PATH="$PATH:$PD";; esac
+      done
+      OPENCLAW="$(command -v openclaw 2>/dev/null)"
+    fi
+    if [ -z "$OPENCLAW" ]; then
+      echo "{\"skipped\":\"openclaw_autoinstall_failed\"}"
+      progress agent failed "OpenClaw 自动安装失败 (详见 boxbench_run_*.log); 可装好后重跑或 BOX_AGENT_AUTOINSTALL=0 跳过安装"
+      return
+    fi
+    progress agent done "OpenClaw 自动安装成功: $OPENCLAW"
+    log "OpenClaw 安装完成: $OPENCLAW"
+  fi
   # E1: 网关/CLI 探活
   progress agent running "检测 OpenClaw 部署 (CLI + 网关端口 $OC_PORT)"
   local OC_VER="" OC_PROC=""
