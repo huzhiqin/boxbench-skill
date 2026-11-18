@@ -334,7 +334,8 @@ def build_agent_section(pe):
         return ""
     if pe.get("skipped"):
         reason_map = {
-            "openclaw_not_installed": "设备未安装 OpenClaw（安装后重跑 collect/multi 可补测）",
+            "openclaw_not_installed": "设备未安装 OpenClaw 且自动安装未启用（BOX_AGENT_AUTOINSTALL=0）或非 Linux",
+            "openclaw_autoinstall_failed": "OpenClaw 自动安装失败（网络受限或依赖缺失，详见设备端运行日志）",
             "openclaw_not_running": "OpenClaw CLI 存在但网关/进程未运行",
             "not_linux_or_disabled": "非 Linux 环境（Windows 无 OpenClaw 部署形态）或显式跳过",
         }
