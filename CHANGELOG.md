@@ -270,10 +270,12 @@ All notable changes to BoxBench Skill will be documented in this file.
 - **新增硬性规则 #10**：用户质疑看板"没进展"时用 `--replay <journal>` 按真实时间轴重演，不重跑真实测试（boxbench_live.py 新增 `--replay`/`--replay-speed`）
 - **新增硬性规则 #11**：报告实测模型名必须真实，禁止"预装模型"等占位名入正式报告
 
-### Changed
-- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
-
 ## [1.10.7] - 2026-11-18
+
+### Changed
+- CHANGELOG.md 补充 [1.10.6] 变更明细（E0 自动安装/版本自检/三处渲染与规则修复）；README 微调
+
+## [1.10.8] - 2026-11-18
 
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
