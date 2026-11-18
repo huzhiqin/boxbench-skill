@@ -1,7 +1,7 @@
 ---
 name: box-bench
 description: 工控算力盒子（AI Box）标准化实测。拿到任何新盒子时触发：自动采集硬件指纹、环境盘点、跑模型实测（解码速度/长上下文/并发/工具调用/多轮），按 SPEC 统一标准产出 HTML 报告。Linux 设备自动加测 OpenClaw Agent 框架集成（工具执行循环/多步链/输出预算）。支持预装模型和指定模型下发测试（国内模型聚焦，含模型合规性验证），支持多模型顺序测试与横向对比报告。触发词：测盒子、盒子测试、工控盒实测、AI Box benchmark、设备验收。
-version: 1.10.3
+version: 1.10.4
 ---
 
 # BoxBench — 工控算力盒子标准化实测 Skill
@@ -20,7 +20,8 @@ version: 1.10.3
 | `PLATFORM_NOTES.md` | **引擎×芯片经验库（测前必查，测后必回写）** — 同平台坑/规则/可用模型直接复用；`boxbench_exp.py sync` 自动合并公共经验（标记块隔离） |
 | `scripts/boxbench_exp.py` | **公共经验池客户端**（`sync` 测前合并、`push` 测后上传、`pull` 只读，零依赖） |
 | `scripts/boxbench.sh` | 设备端采集脚本（阶段A/B 自动 + 阶段C 自动 + multi 多模型 + C13 上下文阶梯） |
-| `scripts/boxbench_live.py` + `scripts/live/` | **本机实时测试工作台**：包装本地或 SSH 测试命令，动态节点/流动连线/步骤耗时/实时日志/运行快照；纯 Python3 标准库，前端资源离线随包分发 |
+| `scripts/boxbench_live.py` + `scripts/live/` | **本机实时测试工作台**：包装本地或 SSH 测试命令，动态节点/流动连线/步骤耗时/实时日志/运行快照；纯 Python3 标准库，前端资源离线随包分发；`--replay <journal>` 按真实时间轴回放历史测试 |
+| `scripts/check_update.sh` | **版本自检**：本地 SKILL.md vs GitHub/Gitee 远端版本；`--verbose` 带说明、`--upgrade` 自动升级；离线输出 unknown 不阻塞（第 0.5 步） |
 | `scripts/boxbench_windows.py` | **被测设备为 Windows** 的等价一键脚本（阶段A/B/classify + 阶段C C2~C12 + C5 流式分段 + GPU 运行时采样，PowerShell + Python 标准库零依赖，产出与 boxbench.sh 同结构 JSON） |
 | `scripts/render_report.py` | 报告渲染器（纯 Python3 标准库，无第三方依赖；Windows 兼容：反斜杠路径/GBK 控制台/无 NPU 标称值回退实测卡） |
 | `scripts/vendor/chart.umd.min.js` | Chart.js 4.4.1（201K）——渲染器自动内嵌进报告，**随 skill 整体分发/拷贝时必须带上 scripts/ 目录**；vendor 丢失时渲染器自动降级 CDN（需联网） |
@@ -40,6 +41,18 @@ version: 1.10.3
 4. 未命中 → 全新平台，正常探索，测完**必须回写**（见第 6 步）
 5. 选型时结合经验库的"可跑模型清单"过滤 HARDWARE_MODEL_MATRIX.md 推荐清单——**矩阵推荐 ≠ 该引擎可跑**（格式/后端限制以经验库为准）
 6. **利用率优先选型**（教训：E300K 跑 35B 仅占 4G/30G，绰绰有余）：首选该档位最大可用模型；主力测完后**默认不向下测更小模型**——大模型跑得绰绰有余时，小模型只有更快没有更好。补测第二模型仅在：显存占用低有上探空间 / 有场景特化对比需求（代码、Agent 特化 vs 通用）/ 主力不达标需备选
+
+### 第 0.5 步：版本自检（每次实测前，可选但推荐）
+本地安装的 skill 可能落后于云端仓库。实测开始前在 **Agent 本机**跑一次：
+```bash
+bash scripts/check_update.sh --verbose
+# 输出: up-to-date（最新）| outdated <远端版本>（有新版）| unknown（离线，不阻塞）
+# 自动升级: bash scripts/check_update.sh --upgrade
+```
+- `outdated` → 先 `--upgrade`（或把仓库最新 `scripts/` 重新拷入本地 skill 目录）再测试，避免用旧脚本踩已修过的坑
+- `unknown`（设备/本机离线）→ 直接继续测试，**永不因版本检查阻塞**
+- 设备端 `boxbench.sh` 也会后台异步自检（24h 缓存、失败静默），设备端脚本过旧时在运行日志里提示"云端已有新版本"——看到该提示应在本次测完后更新设备端脚本
+- 被更新过的 skill 建议顺手核对 `CHANGELOG.md` 里新版本的 Fixed 项，确认是否影响本轮判读
 
 ### 第 1 步：连接信息
 向用户确认（或从上下文提取）：设备 IP、SSH 账号、密码/密钥。未给出则询问。
@@ -79,10 +92,15 @@ python3 scripts/boxbench_live.py -- ssh user@device "bash ~/boxbench.sh collect"
 python scripts/boxbench_live.py --no-open -- python scripts/boxbench_windows.py --all
 ```
 
-- **启动后第一优先级动作**：读取 `BOXBENCH_LIVE_URL=http://127.0.0.1:.../<随机路径>/`，**立即**（a）有内置浏览器/预览面板的 Agent → 在内置浏览器打开该 URL 并告知用户"看板已打开"；（b）无内置浏览器 → 省略 `--no-open` 让系统浏览器弹出；（c）两者都做不到 → 必须把 URL 原文发给用户并说明手动打开。URL 每次运行不同，不要硬编码。
+- **启动后第一优先级动作**：读取 `BOXBENCH_LIVE_URL=http://127.0.0.1:.../<随机路径>/`，**立即**（a）有内置浏览器/预览面板的 Agent → 在内置浏览器打开该 URL 并告知用户"看板已打开"；（b）无内置浏览器 → 省略 `--no-open` 让系统浏览器弹出；（c）两者都做不到 → 必须把 URL 原文发给用户并说明手动打开。URL 每次运行不同，不要硬编码。**必须在测试命令开始前打开看板**——collect 单模型全程仅约 1 分钟，测试开始后才开看板，用户只会看到全部完成后的静态画面（2026-11-18 实际反馈："没有任何变化"）。
+- **回放模式**（v1.11.0）：测试跑完后用户想重看过程，或浏览器打开晚了只见最终态时，用 `--replay` 按真实时间轴重演：
+  ```bash
+  python3 scripts/boxbench_live.py --replay boxbench_live_20261118_103259_xxx.jsonl
+  # 2 倍速: 加 --replay-speed 2.0；循环重放，Ctrl-C 退出
+  ```
+  journal 文件即每次运行落盘的 `boxbench_live_*.jsonl`（事件流已含全部阶段/耗时/日志）。**回放不得替代真实测试**，仅用于补看。
 - **禁止以下列任何理由跳过看板**："collect 很快" / "服务已就绪只是复采" / "复测数据不会变" / "后台跑完直接给你报告"。这些理由全部不成立——用户要的是过程可见，不是只要结果。唯一例外：CI/无人值守场景，或用户明确说"不用界面"。
-- 网页仅监听本机回环地址，资源无 CDN。状态事件经原 SSH 标准错误输出回传，不用开放设备端口。仅支持包装 `auto` / `fingerprint` / `collect` / `multi` 和 Windows 采集；独立 C13 阶梯暂用原日志查看。
-- 已执行/异常/跳过分别展示；**已执行不等于指标达标**，通过率仍以原始 JSON 与报告为准。多模型会重置模型阶段，前一模型事件保存在运行快照的 `models` 中。
+- 网页仅监听本机回环地址，资源无 CDN。状态事件经原 SSH 标准错误输出回传，不用开放设备端口。仅支持包装 `auto` / `fingerprint` / `collect` / `multi` 和 Windows 采集；独立 C13 阶梯暂用原日志查看。- 已执行/异常/跳过分别展示；**已执行不等于指标达标**，通过率仍以原始 JSON 与报告为准。多模型会重置模型阶段，前一模型事件保存在运行快照的 `models` 中。
 - 测试结束后网页默认保留15分钟（`--linger 秒数` 可改）；原始结果和日志仍按原流程保存。本机另存 `boxbench_live_*.jsonl` 事件记录。界面快照／日志含内部环境信息，仅内部使用，不能当作脱敏报告直接外发。
 - 只想展示界面时使用 `python3 scripts/boxbench_live.py --demo`，页面会标记“演示模式 · 非实测数据”，不连接设备、不产出实测数据。**不得用演示模式替代真实测试。**
 
@@ -93,6 +111,8 @@ bash boxbench.sh            # 自动模式：指纹+盘点+（服务就绪则）
 bash boxbench.sh collect     # 单模型补采（服务已启动）
 bash boxbench.sh multi "模型名|模型文件绝对路径" ["模型名2|路径2" ...]
                             # 多模型顺序测试：自动停旧服务→起新服务(计时C1)→C2~C12→停服务→下一个
+                            # ★ 单模型正式测试也用 multi（传一个模型即可）——它是唯一能
+                            #   计时 C1 加载耗时、证据链完整的单模型模式
 bash boxbench.sh ctxtest "模型名|模型文件绝对路径" ["32k,128k,max"]
                             # C13 上下文阶梯验证（可选）：验证模型标称大窗口是否真实可用。
                             # 每档以该窗口重启服务→塞 ~55% 窗口文本(头部埋随机暗号)→记录
@@ -180,7 +200,10 @@ python3 scripts/render_report.py <result.json> [输出.html] --device <型号>
 6. 每台设备产出报告后，同时留存原始 JSON（供跨设备对比）
 7. **Chart.js 内嵌机制**：`scripts/vendor/chart.umd.min.js` 必须随 skill 分发（拷贝/打包/转移到其他 AI 工具时带上 scripts/ 整个目录）；渲染报告后检查产物无 `cdn.jsdelivr.net` 引用（内嵌成功）；若产物出现 CDN 引用说明 vendor 丢失，从 jsdelivr 下载 chart.umd.min.js（4.4.1）放回 scripts/vendor/ 后重渲染。产出报告必须离线可打开（内网/无外网环境是常态）
 8. **对外合规三原则**：① 报告默认脱敏后才可对外（`--no-redact` 版仅限内部排查）；② 对外发送必须经人工复核（第 5.5 步），助手不得自动外发；③ 过程留痕（`boxbench_run_*.log`）与原始 JSON 一并归档，确保结论可回溯、禁止摆拍
-9. **live 看板必须开给用户（不可豁免）**：凡真实测试（`auto`/`collect`/`multi`/Windows 采集），必须在 Agent 所在本机用 `boxbench_live.py` 包装，且按第 2 步三选一把看板交给用户（内置浏览器打开 / 系统浏览器弹出 / URL 原文发给用户）。"测试很快"、"复采"、"CI 之外的任何自判"都不构成跳过理由；仅 CI/无人值守或用户明说不用界面时可跳过。跳过即违规，用户无需追问就应已看到看板。
+9. **live 看板必须开给用户（不可豁免）**：凡真实测试（`auto`/`collect`/`multi`/Windows 采集），必须在 Agent 所在本机用 `boxbench_live.py` 包装，且按第 2 步三选一把看板交给用户（内置浏览器打开 / 系统浏览器弹出 / URL 原文发给用户）。"测试很快"、"复采"、"CI 之外的任何自判"都不构成跳过理由；仅 CI/无人值守或用户明说不用界面时可跳过。跳过即违规，用户无需追问就应已看到看板。**且必须在启动测试命令之前完成看板打开动作**——顺序反了，用户只能看到最终态（教训：2026-11-18 collect 全程 58 秒，用户开看板时已结束，以为看板没工作）。
+10. **看板打开晚 / 用户质疑"没有进展" → 用 `--replay` 重演，不要重跑测试**：每次运行的 `boxbench_live_*.jsonl` 完整记录了事件时间轴，`--replay` 可原样重演过程。重跑真实测试只为刷新数据，不为"给用户看过程"。
+11. **报告实测模型名必须真实**：渲染器已能从引擎启动命令行自动反解模型名（`infer_model_name`），但 Agent 显式传 `--model` 时以传入值为准。禁止把"预装模型"这类占位名写进正式报告；若报告中模型名显示为占位符，说明 JSON 缺 `engine_cmd`/`path`，先补采集再渲染。
+12. **正式测试用 `multi`，不用 `collect`**：只要知道模型文件路径，单模型正式测试一律 `multi "模型名|路径"`（自动起服务计时 C1、证据链完整）。`collect` 仅限"服务由外部启动且无法重启"的补采场景，且报告必须标注"补采（C1 加载耗时未覆盖）"。`auto` 模式在服务已就绪时自动降级为 collect 同样的路径——正式测试时若有模型路径，直接用 `multi` 指定。
 
 ## 已验证的平台事实
 
