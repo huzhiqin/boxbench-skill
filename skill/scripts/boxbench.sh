@@ -38,8 +38,33 @@ ENGINE="${BOX_ENGINE:-/home/dev/houmoAI/houmo/houmo-HLIELLama-xh2/bin/llama-serv
 ENGINE_LIB="${BOX_ENGINE_LIB:-/home/dev/houmoAI/houmo/houmo-HLIELLama-xh2/lib}"
 
 log() {
-  local ts; ts="$(date '+%Y-%m-%d %H:%M:%S')"
+  local ts; ts="$(date '+%H:%M:%S')"
   echo "[$ts] [boxbench] $*" | tee -a "$RUNLOG" >&2
+}
+
+# ---------- 版本自检 (后台异步, 24h 缓存, 失败静默; v1.11.0) ----------
+# 目的: 设备端跑的是旧版脚本时给 Agent 提示。设计原则: 永不阻塞、永不报错打断测试。
+# 缓存: /tmp/.boxbench_vercheck, 86400s 内直接复用结果; BOXBENCH_SKIP_VERCHECK=1 跳过。
+version_check_bg() {
+  [ "${BOXBENCH_SKIP_VERCHECK:-}" = "1" ] && return 0
+  local CACHE="/tmp/.boxbench_vercheck" now
+  now=$(date +%s 2>/dev/null) || return 0
+  if [ -s "$CACHE" ]; then
+    local ts lv rv
+    ts=$(cut -d'|' -f1 "$CACHE" 2>/dev/null); lv=$(cut -d'|' -f2 "$CACHE" 2>/dev/null); rv=$(cut -d'|' -f3 "$CACHE" 2>/dev/null)
+    if [ -n "$ts" ] && [ $(( now - ts )) -lt 86400 ] 2>/dev/null; then
+      [ "$lv" = "$VERSION" ] || { log "⚠ 本地脚本 v${lv:-?} 与运行中 v${VERSION} 不一致 (缓存)"; }
+      [ -n "$rv" ] && [ "$rv" != "$lv" ] && log "⬆ 云端已有新版本 v${rv} (本地 v${lv}) — 建议: 把仓库最新 scripts/boxbench.sh 重新分发到设备"
+      return 0
+    fi
+  fi
+  (
+    local RV=""
+    RV=$(curl -fsSL --connect-timeout 4 --max-time 8 "https://raw.githubusercontent.com/huzhiqin/boxbench-skill/main/skill/scripts/boxbench.sh" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'"' -f2) || true
+    [ -z "$RV" ] && RV=$(curl -fsSL --connect-timeout 4 --max-time 8 "https://gitee.com/276635035/boxbench-skill/raw/main/skill/scripts/boxbench.sh" 2>/dev/null | grep -m1 '^VERSION=' | cut -d'"' -f2) || true
+    echo "${now}|${VERSION}|${RV:-}" > "$CACHE" 2>/dev/null
+    [ -n "$RV" ] && [ "$RV" != "$VERSION" ] && log "⬆ 云端已有新版本 v${RV} (设备端 v${VERSION}) — 不影响本次测试, 建议事后升级"
+  ) &
 }
 
 # Structured events go to stderr, never into result JSON or command substitutions.
@@ -757,6 +782,7 @@ phase_agent() {
 
 # ---------- 主流程 ----------
 MODE="${1:-auto}"
+version_check_bg   # 后台异步版本自检, 不阻塞测试
 if [ "$MODE" = "classify" ]; then
   phase_classify
 elif [ "$MODE" = "ctxtest" ]; then
