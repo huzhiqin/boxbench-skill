@@ -314,3 +314,20 @@ All notable changes to BoxBench Skill will be documented in this file.
 - 渲染器 `infer_model_name()` 路径来源加**顶层 `model_path` 兜底**（引擎段被修正/覆盖时仍能反解模型名，防"预装模型"回退复发）；品牌名连字符恢复 Gyro-S/Inkling-2/Flash-Next；量化段正则支持 TQ1_0 尾段
 - SKILL.md 硬性规则 #13：解码速度必须峰值/均值并列，禁止把均值标成"最快"（推测解码引擎峰值可达均值 1.3~2 倍，实测 46.2 vs 36.3 教训）
 - 实测验证：百应 AI Max 395 Gyro-S 重测，C2 峰值 43.8 / 均值 35.6 tok/s（158 chunks），C5 峰值 47.7 / 均值 38.6，报告模型名/峰值字段全链路正确
+
+## [1.10.13] - 2026-11-26
+
+### Added
+- **C10/GPU 采样 AMD/核显支持（Windows 线）**：nvidia-smi 不可用时自动回退 Windows GPU Engine 性能计数器（零安装，核显/独显通吃）——`_ps_gpu_engine_sample()` 按显存最大进程自动锁定推理进程 PID，聚合其 compute 引擎实例利用率；`gpu_vram_counters()` 读专用显存。C10 在 AMD 设备不再跳过
+- 渲染器 `build_util_section` 支持 `runtime_metrics.source=gpu-counter` 路径：全场综合利用率行 + 计数器口径判读；计数器路径不触发"恒 0"警告；显存判读兼容计数器口径文案
+
+### Fixed
+- **计数器实例名多实例后缀坑**：实例名形如 `engtype_compute 0`（带空格+编号），通配必须 `*pid_X*engtype_compute*` 宽松匹配；严格 `engtype_compute` 尾匹配会全部落空 → util 恒 0（百应 395 首轮验证踩中并修复）
+
+### Verified
+- 百应 AI Max 395（Radeon 8060S 核显）实测：util avg 128.5% / max 158.6%（多调度器聚合口径 >100%），显存 37.1GB；NVIDIA 路径 mock 回归不变，全失败兜底返回 None 不阻塞
+
+## [1.10.14] - 2026-11-26
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
