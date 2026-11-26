@@ -1,7 +1,7 @@
 ---
 name: box-bench
 description: 工控算力盒子（AI Box）标准化实测。拿到任何新盒子时触发：自动采集硬件指纹、环境盘点、跑模型实测（解码速度/长上下文/并发/工具调用/多轮），按 SPEC 统一标准产出 HTML 报告。Linux 设备自动加测 OpenClaw Agent 框架集成（工具执行循环/多步链/输出预算）。支持预装模型和指定模型下发测试（国内模型聚焦，含模型合规性验证），支持多模型顺序测试与横向对比报告。触发词：测盒子、盒子测试、工控盒实测、AI Box benchmark、设备验收。
-version: 1.10.14
+version: 1.10.15
 ---
 
 # BoxBench — 工控算力盒子标准化实测 Skill
@@ -178,10 +178,13 @@ python3 scripts/render_report.py <result.json> [输出.html] --device <型号>
 
 > 这是 skill 的记忆机制：不回写 = 下次同平台从零踩坑。**每测一台设备，经验库必须变厚。**
 
-5. **上传公共经验池**（默认开启，可退出）：报告交付后执行
+5. **上传公共经验池（v1.10.15 起渲染器自动执行，不再依赖人工记忆）**：`render_report.py` 渲染成功后自动完成 `boxbench_exp.py push` 的全部工作（构建 atom → 入 outbox → 上传），并按 `evidence_hash` 写本地台账 `~/.boxbench/pushed_ledger.json` —— 同一份结果 JSON 幂等不重传。控制台会打印 `[exp] 自动 push 完成` / `[exp] 已推送过` 字样。
+   - **何时还需手动 push**：仅在渲染在本机以外环境完成、或结果 JSON 事后被修正（新 evidence_hash）时，手动执行
    ```bash
    python3 scripts/boxbench_exp.py push --result boxbench_results_xxx.json
    ```
+   - 自动 push 失败不阻塞渲染：atom 留在 outbox，`boxbench_exp.py flush` 可重传；下次用同一 JSON 渲染也会自动补推
+   - 退出贡献：`export BOXBENCH_CONTRIBUTE=0`（自动 push 同样尊重该开关）或渲染时加 `--no-push`
    - 平台键自动推断（取自结果 JSON 的 `engine.engine_name` 首词）；推断不出时明确报错并要求 `--platform`，不会编造键名导致池子分叉
    - 自动完成：提取白名单证据 → 脱敏 → 生成结构化经验单元 → 尽力上传（失败进本地 outbox 稍后 `flush` 重传）
    - 上传的是**脱敏后的结构化事实 + 证据**，不含 IP/账号/家目录等隐私（客户端与服务端双重脱敏）
@@ -202,8 +205,9 @@ python3 scripts/render_report.py <result.json> [输出.html] --device <型号>
 8. **对外合规三原则**：① 报告默认脱敏后才可对外（`--no-redact` 版仅限内部排查）；② 对外发送必须经人工复核（第 5.5 步），助手不得自动外发；③ 过程留痕（`boxbench_run_*.log`）与原始 JSON 一并归档，确保结论可回溯、禁止摆拍
 9. **live 看板必须开给用户（不可豁免）**：凡真实测试（`auto`/`collect`/`multi`/Windows 采集），必须在 Agent 所在本机用 `boxbench_live.py` 包装，且按第 2 步三选一把看板交给用户（内置浏览器打开 / 系统浏览器弹出 / URL 原文发给用户）。"测试很快"、"复采"、"CI 之外的任何自判"都不构成跳过理由；仅 CI/无人值守或用户明说不用界面时可跳过。跳过即违规，用户无需追问就应已看到看板。**且必须在启动测试命令之前完成看板打开动作**——顺序反了，用户只能看到最终态（教训：2026-11-18 collect 全程 58 秒，用户开看板时已结束，以为看板没工作）。
 10. **看板打开晚 / 用户质疑"没有进展" → 用 `--replay` 重演，不要重跑测试**：每次运行的 `boxbench_live_*.jsonl` 完整记录了事件时间轴，`--replay` 可原样重演过程。重跑真实测试只为刷新数据，不为"给用户看过程"。
-11. **报告实测模型名必须真实**：渲染器已能从引擎启动命令行自动反解模型名（`infer_model_name`），但 Agent 显式传 `--model` 时以传入值为准。禁止把"预装模型"这类占位名写进正式报告；若报告中模型名显示为占位符，说明 JSON 缺 `engine_cmd`/`path`，先补采集再渲染。
+11. **报告实测模型名必须真实**：渲染器已能自动反解模型名（`infer_model_name`，v1.11.1 起来源优先级：engine_cmd 的 `-m` 参数 > 模型记录 `path` > engine 段 `model_path`/`model_file`——最后者覆盖 Strata 等打包式引擎），但 Agent 显式传 `--model` 时以传入值为准。禁止把"预装模型"这类占位名写进正式报告；若报告中模型名显示为占位符，说明 JSON 缺上述全部字段，先补采集再渲染。
 12. **正式测试用 `multi`，不用 `collect`**：只要知道模型文件路径，单模型正式测试一律 `multi "模型名|路径"`（自动起服务计时 C1、证据链完整）。`collect` 仅限"服务由外部启动且无法重启"的补采场景，且报告必须标注"补采（C1 加载耗时未覆盖）"。`auto` 模式在服务已就绪时自动降级为 collect 同样的路径——正式测试时若有模型路径，直接用 `multi` 指定。
+13. **解码速度必须峰值/均值并列呈现，禁止把均值标成"最快"**：usage 口径（completion_tokens/耗时）是持续负载**均值**；峰值 = 流式 1s 滑动窗口最大瞬时速度（v1.11.1 起采集端自动记录 `speed_peak_tps`/`speed_mean_tps`）。推测解码（DFlash2/MTP）引擎峰值可达均值 1.3~2 倍（2026-11-26 实测：同机冒烟 46.2 vs boxbench 均值 36.3 被用户质疑"为什么缩水"），KPI 卡/摘要/对比表一律标"解码均值"或"峰值/均值"双口径，旧数据无峰值字段时显示"—/均值"并注明为均值口径。
 
 ## 已验证的平台事实
 
