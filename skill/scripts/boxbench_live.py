@@ -40,8 +40,9 @@ STAGES = [
     ("latency", "首字延迟", "C3 · first.token", "clock", "采集首字延迟；计时口径以原始报告为准。"),
     ("agent", "Agent 集成", "E · openclaw", "shield-check", "OpenClaw 框架集成测试：自动安装/端到端/工具循环/多步链/输出预算；未装时自动安装。"),
     ("archive", "结果归档", "JSON · results.save", "file-check", "保存原始测试 JSON。HTML 报告另由渲染器生成。"),
+    ("exp-push", "上传经验池", "EXP · commons.push", "cloud-upload", "渲染报告时自动上传脱敏经验至公共经验池（幂等，同 JSON 不重传）。"),
 ]
-MODEL_STAGES = {s[0] for s in STAGES[3:-1]}
+MODEL_STAGES = {s[0] for s in STAGES[3:-2]}
 
 
 class RunState:
