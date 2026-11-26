@@ -331,3 +331,13 @@ All notable changes to BoxBench Skill will be documented in this file.
 
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+
+## [1.10.15] - 2026-11-26
+
+### Added
+- **经验池 push 自动化（防漏跑，机制级修复）**：`render_report.py` 渲染成功后自动执行经验池 push（构建 atom → 入 outbox → 上传），不再依赖 Agent 记性执行手动步骤
+  - 幂等去重：本地台账 `~/.boxbench/pushed_ledger.json` 按 `evidence_hash` 记录，同一结果 JSON 重渲染不重传（已实测验证：首推成功 + 二次渲染跳过）
+  - 失败不阻塞渲染：atom 留 outbox，`flush` 可重传；下次同 JSON 渲染自动补推
+  - 退出开关：`BOXBENCH_CONTRIBUTE=0` 或渲染加 `--no-push`；`--model`/`--platform` 精细参数仍走手动 push
+  - 无实测数据（phase_c/models 空）或平台键无法推断时跳过并打印原因
+- 背景：2026-11-26 Gyro-S 轮因 push 是 SKILL.md 第 6 步纯文字要求，在改 JSON/重渲染循环中被漏掉，经验池缺 11-26 记录
