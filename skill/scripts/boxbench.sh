@@ -25,8 +25,8 @@
 #     BOX_AGENT_AUTOINSTALL=0  关闭 OpenClaw 自动安装 (默认: Linux 未装时自动 install.sh 安装)
 # 产出: ./boxbench_results_{YYYYMMDD_HHMMSS}.json (stdout 输出路径)
 # =============================================================
-VERSION="1.7"
-SPEC_VERSION="1.6"
+VERSION="1.8"
+SPEC_VERSION="1.7"
 OUT="boxbench_results_$(date +%Y%m%d_%H%M%S).json"
 # 运行日志落盘 (过程留痕: 每步时间戳, 供复核/复盘/证明真实执行)
 RUNLOG="boxbench_run_$(date +%Y%m%d_%H%M%S).log"
@@ -281,33 +281,72 @@ PYEOF
     T1=$(date +%s.%N)
     echo ",\"c4_long_ctx\":{\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"ok\":$(python3 -c 'import json; d=json.load(open("'$TMPD'/longr.json")); print(1 if d["choices"][0]["message"]["content"] else 0)' 2>/dev/null || echo -1),\"prompt_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("prompt_tokens",-1))' 2>/dev/null || echo -1),\"completion_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("completion_tokens",-1))' 2>/dev/null || echo -1),\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
     echo ",\"idle_baseline\":$(util_summarize "$IDLE_T0" "$IDLE_T1" "$UTILF")"
-    # C6/C7: 并发 2/4
+    # C6/C7: 并发能力上探 (v1.8): 单路基准 → 2/4/8/16/32 倍增阶梯, 每档全部成功
+    # 且单路耗时较基准衰减 <30% 才继续, 首个失败档的前一档 = 最大无衰减并发 (conc_max)
     progress context done "长输入请求采集结束；Linux C5 分段计时不在此脚本中实现"
-    progress concurrency running "依次执行2路和4路并发请求"
-    for N in 2 4; do
-      progress concurrency running "执行 ${N} 路并发请求"
-      T0=$(date +%s.%N)
-      CUR_PIDS=""
-      for i in $(seq 1 $N); do
-        curl -s --max-time 380 "$API/v1/chat/completions" -H 'Content-Type: application/json' \
-          -d "{\"messages\":[{\"role\":\"user\",\"content\":\"请写200字短文，主题编号${i}：介绍一项工业技术\"}],\"max_tokens\":200,\"stream\":false,\"chat_template_kwargs\":{\"enable_thinking\":false}}" \
-          -o "$TMPD/par_${i}.json" &
-        CUR_PIDS="$CUR_PIDS $!"
-      done
-      wait $CUR_PIDS
-      T1=$(date +%s.%N)
-      OKN=0; CTOK=0
-      for i in $(seq 1 $N); do
-        if python3 -c "import json; json.load(open('$TMPD/par_${i}.json'))['choices'][0]['message']['content']" 2>/dev/null; then
-          OKN=$((OKN+1))
-          T=$(python3 -c 'import json; print(json.load(open("'$TMPD'/par_${i}.json")).get("usage",{}).get("completion_tokens",-1))' 2>/dev/null || echo -1)
-          [ "$T" -gt 0 ] 2>/dev/null && CTOK=$((CTOK+T))
+    progress concurrency running "并发阶梯上探: 单路基准 → 2/4/8/16/32 逐档倍增"
+    # 单路基准请求 (与阶梯同规格: 200 max_tokens 生成), 作为衰减判定基准
+    T0=$(date +%s.%N)
+    curl -s --max-time 380 "$API/v1/chat/completions" -H 'Content-Type: application/json' \
+      -d '{"messages":[{"role":"user","content":"请写200字短文，主题编号0：介绍一项工业技术"}],"max_tokens":200,"stream":false,"chat_template_kwargs":{"enable_thinking":false}}' \
+      -o "$TMPD/par_0.json"
+    T1=$(date +%s.%N)
+    BASE_OK=$(python3 -c "import json; json.load(open('$TMPD/par_0.json'))['choices'][0]['message']['content']" 2>/dev/null && echo 1 || echo 0)
+    BASE_TOK=$(python3 -c 'import json; print(json.load(open("'$TMPD'/par_0.json")).get("usage",{}).get("completion_tokens",-1))' 2>/dev/null || echo -1)
+    BASE_WALL=$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}')
+    echo ",\"conc_baseline\":{\"ok\":$BASE_OK,\"wall_s\":$BASE_WALL,\"completion_tokens\":$BASE_TOK,\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
+    CONC_MAX=0
+    if [ "$BASE_OK" = 1 ]; then
+      CONC_MAX=1
+      for N in 2 4 8 16 32; do
+        progress concurrency running "执行 ${N} 路并发请求"
+        T0=$(date +%s.%N)
+        CUR_PIDS=""
+        for i in $(seq 1 $N); do
+          curl -s --max-time 380 "$API/v1/chat/completions" -H 'Content-Type: application/json' \
+            -d "{\"messages\":[{\"role\":\"user\",\"content\":\"请写200字短文，主题编号${i}：介绍一项工业技术\"}],\"max_tokens\":200,\"stream\":false,\"chat_template_kwargs\":{\"enable_thinking\":false}}" \
+            -o "$TMPD/par_${i}.json" &
+          CUR_PIDS="$CUR_PIDS $!"
+        done
+        wait $CUR_PIDS
+        T1=$(date +%s.%N)
+        OKN=0; CTOK=0
+        for i in $(seq 1 $N); do
+          if python3 -c "import json; json.load(open('$TMPD/par_${i}.json'))['choices'][0]['message']['content']" 2>/dev/null; then
+            OKN=$((OKN+1))
+            T=$(python3 -c 'import json; print(json.load(open("'$TMPD'/par_${i}.json")).get("usage",{}).get("completion_tokens",-1))' 2>/dev/null || echo -1)
+            [ "$T" -gt 0 ] 2>/dev/null && CTOK=$((CTOK+T))
+          fi
+        done
+        WALLN=$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}')
+        # 衰减判定: 本档耗时 vs 基准。有 usage 时按"本档完成 token 量折算串行基准份数"修正;
+        # 无 usage 时退化口径 wall/路数 (已知坑: 引擎并发响应可能不回 usage, 此时判 wall_s)
+        VERDICT=$(python3 -c "
+ok=$OKN; n=$N; wall=$WALLN; bw=$BASE_WALL; ctok=$CTOK
+if ok < n:
+    print('fail')
+else:
+    equiv = (ctok / 200.0) if ctok > 0 else float(n)
+    per = wall / equiv if equiv > 0 else wall
+    drop = (per - bw) / bw * 100 if bw > 0 else 0
+    print('ok' if drop < 30 else 'degraded')")
+        echo ",\"c6c7_conc${N}\":{\"ok\":$OKN,\"total\":$N,\"wall_s\":$WALLN,\"completion_tokens\":$CTOK,\"verdict\":\"$VERDICT\",\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
+        if [ "$VERDICT" = "ok" ]; then
+          CONC_MAX=$N
+        else
+          if [ "$VERDICT" = "degraded" ]; then
+            log "并发 ${N} 路全部成功但单路衰减 ≥30%, 上探终止 (conc_max=$CONC_MAX)"
+          else
+            log "并发 ${N} 路有失败请求, 上探终止 (conc_max=$CONC_MAX)"
+          fi
+          break
         fi
       done
-      echo ",\"c6c7_conc${N}\":{\"ok\":$OKN,\"total\":$N,\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"completion_tokens\":$CTOK,\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
-    done
-    # C8: 工具调用
-    progress concurrency done "并发请求采集结束"
+    else
+      log "⚠ 单路基准请求失败, 并发阶梯跳过"
+    fi
+    echo ",\"conc_max\":$CONC_MAX"
+    progress concurrency done "并发上探结束: 最大无衰减并发 ${CONC_MAX} 路"
     progress tools running "验证 function calling 响应"
     TR=$(curl -s --max-time 100 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
       "messages":[{"role":"user","content":"北京现在天气怎么样？请帮我查一下"}],
@@ -371,7 +410,7 @@ try:
     c = json.load(open(sys.argv[1]))
     checks = [('decode', c.get('c2_short_decode', {}).get('reply_len', -1) <= 0),
               ('context', c.get('c4_long_ctx', {}).get('ok') != 1),
-              ('concurrency', any(c.get('c6c7_conc%d' % n, {}).get('ok') != n for n in (2, 4)))]
+              ('concurrency', c.get('conc_max', 0) < 1)]
     for stage, bad in checks:
         if bad:
             print('@@BOXBENCH_EVENT ' + json.dumps(dict(stage=stage, status='failed', detail='请求结果不完整或未收到有效响应，详见原始 JSON'), ensure_ascii=False), flush=True)
@@ -706,18 +745,52 @@ phase_agent() {
   fi
   OPENCLAW="${BOX_OPENCLAW:-$(command -v openclaw 2>/dev/null)}"
   OC_PORT="${BOX_OPENCLAW_PORT:-18789}"
-  # E0: 未装 OpenClaw 时主动安装 (v1.11.0; BOX_AGENT_AUTOINSTALL=0 关闭)
-  # 官方安装: curl -fsSL https://openclaw.ai/install.sh | bash (自动装 Node 24+/依赖, 含 --no-onboard 跳过交互)
+  # E0: 未装 OpenClaw 时主动安装 (v1.12.0 双路: 先无 sudo 用户态安装, 失败再退官方 install.sh)
+  # 背景: 官方 install.sh 需 sudo 装 Node/构建工具, 无免密 sudo 的设备账号会第 1 步即失败。
+  # 用户态路径: Node 官方 tar.gz 解压到 ~/.local/node + npm prefix ~/.local, 全程零 root。
+  # 环境变量: BOX_AGENT_AUTOINSTALL=0 关闭; BOX_AGENT_NODE_VERSION 自定义 Node 版本 (默认 v22.14.0)
   if [ -z "$OPENCLAW" ] && [ "${BOX_AGENT_AUTOINSTALL:-1}" = "1" ]; then
-    progress agent running "未检测到 openclaw, 正在自动安装 (openclaw.ai/install.sh, 约1-3分钟)"
-    log "阶段E: 未装 OpenClaw, 开始自动安装"
-    if curl -fsSL --proto '=https' --tlsv1.2 --max-time 300 https://openclaw.ai/install.sh | bash -s -- --no-onboard >>"$RUNLOG" 2>&1; then
-      # 安装后刷新 PATH 再探测 (npm global / ~/.local/bin 均可能)
-      for PD in "$HOME/.local/bin" "$HOME/.npm-global/bin" /usr/local/bin; do
-        case ":$PATH:" in *":$PD:"*) ;; *) PATH="$PATH:$PD";; esac
-      done
-      OPENCLAW="$(command -v openclaw 2>/dev/null)"
+    progress agent running "未检测到 openclaw, 正在自动安装 (优先无 sudo 用户态安装, 约1-3分钟)"
+    log "阶段E: 未装 OpenClaw, 开始自动安装 (用户态优先)"
+    oc_autoinstall_ok=0
+    # --- 路径1: 无 sudo 用户态安装 (aarch64/x86_64 Linux) ---
+    OC_NODE_VER="${BOX_AGENT_NODE_VERSION:-v22.14.0}"
+    case "$(uname -m)" in
+      aarch64|arm64) OC_NODE_ARCH="arm64";;
+      x86_64)        OC_NODE_ARCH="x64";;
+      *)             OC_NODE_ARCH="";;
+    esac
+    if [ -n "$OC_NODE_ARCH" ] && command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+      progress agent running "用户态安装 Node $OC_NODE_VER ($OC_NODE_ARCH) 到 ~/.local/node"
+      if [ ! -x "$HOME/.local/node/bin/node" ]; then
+        curl -fsSL --max-time 240 -o /tmp/.boxbench_node.tar.xz \
+          "https://nodejs.org/dist/$OC_NODE_VER/node-$OC_NODE_VER-linux-$OC_NODE_ARCH.tar.xz" >>"$RUNLOG" 2>&1 \
+          && tar -xJf /tmp/.boxbench_node.tar.xz -C "$HOME/.local" >>"$RUNLOG" 2>&1 \
+          && mv "$HOME/.local/node-$OC_NODE_VER-linux-$OC_NODE_ARCH" "$HOME/.local/node" >>"$RUNLOG" 2>&1 \
+          && rm -f /tmp/.boxbench_node.tar.xz
+      fi
+      if [ -x "$HOME/.local/node/bin/node" ]; then
+        PATH="$HOME/.local/node/bin:$PATH"
+        progress agent running "npm 安装 openclaw 到 ~/.local (用户目录, 不需要 root)"
+        if mkdir -p "$HOME/.local" \
+          && "$HOME/.local/node/bin/npm" config set prefix "$HOME/.local" >>"$RUNLOG" 2>&1 \
+          && "$HOME/.local/node/bin/npm" install -g openclaw --no-audit --no-fund >>"$RUNLOG" 2>&1; then
+          oc_autoinstall_ok=1
+        fi
+      fi
     fi
+    # --- 路径2 (回退): 官方 install.sh (需要 sudo 时可能失败) ---
+    if [ "$oc_autoinstall_ok" != "1" ]; then
+      progress agent running "用户态安装未成功, 回退官方 install.sh (需 sudo 时会失败)"
+      log "阶段E: 用户态安装失败, 回退 openclaw.ai/install.sh"
+      curl -fsSL --proto '=https' --tlsv1.2 --max-time 300 https://openclaw.ai/install.sh | bash -s -- --no-onboard >>"$RUNLOG" 2>&1 || true
+    fi
+    # 安装后刷新 PATH 再探测 (~/.local/bin / npm global / 官方脚本位置)
+    for PD in "$HOME/.local/bin" "$HOME/.local/node/bin" "$HOME/.npm-global/bin" /usr/local/bin; do
+      case ":$PATH:" in *":$PD:"*) ;; *) PATH="$PATH:$PD";; esac
+    done
+    hash -r 2>/dev/null
+    OPENCLAW="$(command -v openclaw 2>/dev/null)"
     if [ -z "$OPENCLAW" ]; then
       echo "{\"skipped\":\"openclaw_autoinstall_failed\"}"
       progress agent failed "OpenClaw 自动安装失败 (详见 boxbench_run_*.log); 可装好后重跑或 BOX_AGENT_AUTOINSTALL=0 跳过安装"
