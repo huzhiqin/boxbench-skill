@@ -3,16 +3,20 @@ const $ = id => document.getElementById(id);
 const statusNames = {pending:"等待中", running:"运行中", done:"已执行", failed:"异常", skipped:"已跳过"};
 const tiles = ["#4469ee", "#242b29", "#f17b44", "#4469ee", "#d88739", "#506bdf", "#262e29", "#e17c40", "#5277db", "#768953", "#e18b47", "#30382c"];
 // Serpentine graph: real stage state drives every node and active edge.
-const positions = [[1,1],[2,1],[3,1],[4,1],[4,2],[3,2],[2,2],[1,2],[1,3],[2,3],[3,3],[4,3]];
+// Node count is dynamic (13 stages since results.archive was added); layout is computed, not hardcoded.
+function gridPos(i) { const row = Math.floor(i / 4), col = i % 4; return [row % 2 === 0 ? col + 1 : 4 - col, row + 1]; }
 let state = null, selected = null, follow = true, sequence = -1, nodeButtons = [], lastLogs = "", disconnected = false, planKey = "";
 const shortTime = t => new Date(t * 1000).toLocaleTimeString("zh-CN", {hour12:false});
 function duration(seconds) { const s = Math.max(0, Math.floor(seconds)); return `${Math.floor(s/60).toString().padStart(2,"0")}:${(s%60).toString().padStart(2,"0")}`; }
 function makeIcon(name) {const img=document.createElement("img");img.src=`icons/${name}.svg`;img.alt="";return img;}
 function initNodes() {
+  const gridRows = Math.ceil(state.stages.length / 4);
+  document.querySelector(".nodes").style.gridTemplateRows = `repeat(${gridRows},1fr)`;
+  document.getElementById("flow-canvas").style.setProperty("--rows", gridRows);
   nodeButtons = state.stages.map((s,i) => {
     const node=document.createElement("button"); node.className="node";node.dataset.stage=s.id;
-    const [x,y]=positions[i];node.style.gridColumn=x;node.style.gridRow=y;node.style.setProperty("--tile",tiles[i]);
-    if(i===1||i===6||i===11)node.classList.add("tone-dark");
+    const [x,y]=gridPos(i);node.style.gridColumn=x;node.style.gridRow=y;node.style.setProperty("--tile",tiles[i%tiles.length]);
+    if(i%6===1||i%6===5)node.classList.add("tone-dark");
     const tile=document.createElement("span");tile.className="node-tile";tile.append(makeIcon(s.icon));
     const badge=document.createElement("span");badge.className="node-state";badge.append(makeIcon("check"));
     const title=document.createElement("strong");title.textContent=s.name;
@@ -32,7 +36,7 @@ function renderNodes(){
 function renderDetail(){
   if(!state)return;
   const s=state.stages.find(s=>s.id===selected)||state.stages[0];const i=state.stages.indexOf(s);
-  $("detail-index").textContent=`${String(i+1).padStart(2,"0")} / 12`;
+  $("detail-index").textContent=`${String(i+1).padStart(2,"0")} / ${String(state.stages.length).padStart(2,"0")}`;
   $("detail-icon").replaceChildren(makeIcon(s.icon));$("detail-name").textContent=s.name;
   $("detail-status").textContent=statusNames[s.status];$("detail-status").className=`detail-status ${s.status}`;
   $("detail-description").textContent=s.description;$("detail-code").textContent=s.code;
@@ -57,7 +61,9 @@ function update(){
   $("run-status").textContent=state.status==="running"?"测试运行中":state.status==="failed"?"进程异常退出":issues?"已结束 · 含异常":"测试已结束";
   $("run-status").classList.toggle("failed",state.status==="failed"||issues);
   const completed=state.stages.filter(s=>["done","failed","skipped"].includes(s.status)).length;
-  $("completed").textContent=completed;$("progress").value=completed;
+  $("completed").textContent=completed;$("progress").value=completed;$("progress").max=state.stages.length;
+  $("stage-total").textContent=` / ${state.stages.length}`;
+  $("stage-count").textContent=state.stages.length;
   if(follow)selected=state.current||[...state.stages].reverse().find(s=>s.status==="failed")?.id||[...state.stages].reverse().find(s=>s.status!=="pending")?.id||state.stages[0].id;
   const nextPlan=state.stages.map(s=>s.id).join(",");
   if(planKey!==nextPlan){$("nodes").replaceChildren();initNodes();planKey=nextPlan;measure();}
@@ -82,7 +88,7 @@ function measure(){const rect=$("flow-canvas").getBoundingClientRect();w=rect.wi
 new ResizeObserver(measure).observe($("flow-canvas"));
 function draw(time){
   ctx.clearRect(0,0,w,h);ctx.fillStyle="#dce1d3";for(let x=13;x<w;x+=18)for(let y=11;y<h;y+=18){ctx.beginPath();ctx.arc(x,y,.7,0,Math.PI*2);ctx.fill();}
-  if(state&&points.length===12){for(let i=1;i<points.length;i++){
+  if(state&&points.length===nodeButtons.length&&nodeButtons.length){for(let i=1;i<points.length;i++){
     const a=points[i-1],b=points[i],s=state.stages[i],prev=state.stages[i-1];const horizontal=Math.abs(a.y-b.y)<15;
     const side=a.x>w/2?1:-1;
     const from={x:a.x+(horizontal?Math.sign(b.x-a.x):side)*(a.size/2+3),y:a.y};
