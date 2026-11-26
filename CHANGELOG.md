@@ -341,3 +341,11 @@ All notable changes to BoxBench Skill will be documented in this file.
   - 退出开关：`BOXBENCH_CONTRIBUTE=0` 或渲染加 `--no-push`；`--model`/`--platform` 精细参数仍走手动 push
   - 无实测数据（phase_c/models 空）或平台键无法推断时跳过并打印原因
 - 背景：2026-11-26 Gyro-S 轮因 push 是 SKILL.md 第 6 步纯文字要求，在改 JSON/重渲染循环中被漏掉，经验池缺 11-26 记录
+
+## [1.10.16] - 2026-11-26
+
+### Added
+- **live 看板流水线新增第 14 环节「上传经验池」（exp-push）**：位于「结果归档」之后，图标 cloud-upload（Tabler，本地分发）
+  - boxbench.sh / boxbench_windows.py 归档完成后发 `exp-push done` 事件（标注：push 挂接在渲染器，设备端不直接联网）
+  - `MODEL_STAGES` 切片改为 `[3:-2]`，exp-push 与 archive 一样不随模型切换重置
+  - 与 v1.10.15 的渲染器自动 push 配套：看板上用户能看到经验池上传这一步真实存在
