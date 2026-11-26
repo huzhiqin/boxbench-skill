@@ -315,7 +315,7 @@ All notable changes to BoxBench Skill will be documented in this file.
 - SKILL.md 硬性规则 #13：解码速度必须峰值/均值并列，禁止把均值标成"最快"（推测解码引擎峰值可达均值 1.3~2 倍，实测 46.2 vs 36.3 教训）
 - 实测验证：百应 AI Max 395 Gyro-S 重测，C2 峰值 43.8 / 均值 35.6 tok/s（158 chunks），C5 峰值 47.7 / 均值 38.6，报告模型名/峰值字段全链路正确
 
-## [1.10.13] - 2026-11-26
+## [1.10.14] - 2026-11-26
 
 ### Added
 - **C10/GPU 采样 AMD/核显支持（Windows 线）**：nvidia-smi 不可用时自动回退 Windows GPU Engine 性能计数器（零安装，核显/独显通吃）——`_ps_gpu_engine_sample()` 按显存最大进程自动锁定推理进程 PID，聚合其 compute 引擎实例利用率；`gpu_vram_counters()` 读专用显存。C10 在 AMD 设备不再跳过
