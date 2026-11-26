@@ -349,3 +349,10 @@ All notable changes to BoxBench Skill will be documented in this file.
   - boxbench.sh / boxbench_windows.py 归档完成后发 `exp-push done` 事件（标注：push 挂接在渲染器，设备端不直接联网）
   - `MODEL_STAGES` 切片改为 `[3:-2]`，exp-push 与 archive 一样不随模型切换重置
   - 与 v1.10.15 的渲染器自动 push 配套：看板上用户能看到经验池上传这一步真实存在
+
+## [1.10.17] - 2026-11-26
+
+### Fixed
+- **看板 exp-push 事件语义修正（用户反馈驱动）**：归档完成后看板不再直接亮"完成"——boxbench.sh / boxbench_windows.py 归档时改发 `running` 状态（前端 loader 进行中动画），真实上传仍由本机渲染器在渲染报告成功后自动 push
+- boxbench_live.py 进程退出处理特判 exp-push：保持 running 并改写文案为"等待本机渲染报告时自动上传"，不再被误标为"执行中断"异常（原逻辑会把进程退出时所有 running 阶段强制标 failed）
+- 离线模拟验证 PASS（事件流全链路）+ py_compile / bash -n 语法检查通过
