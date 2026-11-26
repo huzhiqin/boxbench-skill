@@ -306,3 +306,8 @@ All notable changes to BoxBench Skill will be documented in this file.
 - 旧 JSON 兼容：无 conc_max 时渲染器自动从 c6c7_conc2/conc4 推导（4 路全过=4，否则 2 路全过=2）
 - live 看板并发阶段描述同步更新；SPEC.md 升 v1.7，SKILL.md SPEC 引用同步
 - 已用 20261118 真实历史 JSON（旧结构）+ 新结构 mock 数据双路径回归渲染验证
+
+## [1.10.12] - 2026-11-26
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
