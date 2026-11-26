@@ -20,17 +20,17 @@
     <section class="summary" aria-label="执行概览">
       <div class="summary-item"><span class="summary-label">运行状态</span><strong id="run-status" class="run-status">连接中</strong></div>
       <div class="summary-item"><span class="summary-label">当前模型</span><strong id="model-name">等待识别</strong></div>
-      <div class="summary-item"><span class="summary-label">已处理步骤</span><strong><span id="completed">0</span><small> / 12</small></strong><div class="progress-track"><progress id="progress" max="12" value="0" aria-label="已处理步骤"></progress></div></div>
+      <div class="summary-item"><span class="summary-label">已处理步骤</span><strong><span id="completed">0</span><small id="stage-total"> / 0</small></strong><div class="progress-track"><progress id="progress" max="0" value="0" aria-label="已处理步骤"></progress></div></div>
       <div class="summary-item"><span class="summary-label">运行时间</span><strong id="elapsed" class="mono">00:00</strong></div>
     </section>
     <div class="workspace">
       <section class="flow-panel">
-        <div class="panel-heading"><div><span class="panel-kicker">WORKFLOW</span><h2>测试流水线 <span class="count-badge">12</span></h2></div><span id="sync-label" class="sync-label">实时同步</span></div>
+        <div class="panel-heading"><div><span class="panel-kicker">WORKFLOW</span><h2>测试流水线 <span id="stage-count" class="count-badge">-</span></h2></div><span id="sync-label" class="sync-label">实时同步</span></div>
         <div class="canvas-scroll"><div class="flow-canvas" id="flow-canvas"><canvas id="connections" aria-hidden="true"></canvas><div id="nodes" class="nodes"></div><div class="canvas-caption"><span>自动执行 · 按实际状态更新</span><span>点击节点查看详情</span></div></div></div>
         <div class="flow-footer"><div class="legend"><span class="legend-done">已执行</span><span class="legend-running">运行中</span><span class="legend-pending">等待中</span><span class="legend-skipped">已跳过</span><span class="legend-failed">异常</span></div><span class="footer-note">步骤完成 ≠ 指标达标</span></div>
       </section>
       <aside class="detail-panel">
-        <div class="detail-top"><span class="panel-kicker">STEP INSPECTOR</span><span id="detail-index" class="mono">01 / 12</span></div>
+        <div class="detail-top"><span class="panel-kicker">STEP INSPECTOR</span><span id="detail-index" class="mono">-- / --</span></div>
         <div class="detail-icon" id="detail-icon"><img src="icons/cpu.svg" alt=""></div>
         <div class="detail-status" id="detail-status">等待开始</div><h2 id="detail-name">硬件指纹</h2><p class="detail-description" id="detail-description">识别芯片、内存、存储与加速器。</p>
         <dl><div><dt>测试项</dt><dd id="detail-code" class="mono">A · hardware.scan</dd></div><div><dt>执行耗时</dt><dd id="detail-duration" class="mono">—</dd></div><div><dt>开始时间</dt><dd id="detail-start" class="mono">—</dd></div></dl>
