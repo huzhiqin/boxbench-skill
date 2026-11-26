@@ -366,4 +366,4 @@ All notable changes to BoxBench Skill will be documented in this file.
 ## [1.10.19] - 2026-11-26
 
 ### Changed
-- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+- 1.10.18 补传：GitHub 端 boxbench_live.py 首次上传失败、Gitee 端 CHANGELOG 上传失败，本轮强制同步补齐（内容同 1.10.18）
