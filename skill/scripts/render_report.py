@@ -1170,5 +1170,61 @@ Chart.defaults.borderColor='#2d3748';const grid={{color:'#21262d'}};
         # Windows GBK 控制台打不出中文文件名：转为可显示形式输出
         print(f"OK -> {out_path}".encode("unicode_escape").decode())
 
+# ---------- 经验池自动 push（渲染成功后触发，幂等不重传） ----------
+# 背景（2026-11-26）：push 原为 SKILL.md 第6步的手动步骤，靠 Agent 记性执行，
+# Gyro-S 那轮在改 JSON/重渲染循环中被漏掉。改为渲染成功后自动触发：
+#   - 本地台账 ~/.boxbench/pushed_ledger.json 按 evidence_hash 记录已推送，幂等
+#   - 失败不阻塞渲染（outbox 兜底），BOXBENCH_CONTRIBUTE=0 / --no-push 可退出
+def auto_push_to_commons(res_path: str):
+    """渲染成功后自动 push 经验池。幂等：同一 evidence_hash 不重复 push。"""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import boxbench_exp as exp
+    except ImportError:
+        print("[exp] boxbench_exp.py 不在旁路，跳过自动 push", file=sys.stderr)
+        return
+    if not exp.contribution_enabled():
+        print("[exp] BOXBENCH_CONTRIBUTE=0，跳过自动 push", file=sys.stderr)
+        return
+    try:
+        d = json.load(open(res_path, encoding="utf-8"))
+    except Exception as e:
+        print(f"[exp] 结果 JSON 读取失败，跳过自动 push: {e}", file=sys.stderr)
+        return
+    platform = exp.derive_platform_key(d)
+    if not platform:
+        print("[exp] 平台键无法推断（engine.engine_name 缺失），跳过自动 push", file=sys.stderr)
+        return
+    # 跳过占位数据：无 phase_c 说明没实测，不产经验
+    if not (d.get("phase_c") or d.get("models")):
+        print("[exp] 无实测数据（phase_c/models 空），跳过自动 push", file=sys.stderr)
+        return
+    atom = exp.make_atom(d, platform)
+    ev_hash = atom.get("evidence_hash", "")
+    ledger_path = exp.state_dir() / "pushed_ledger.json"
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {}
+    except Exception:
+        ledger = {}
+    if ev_hash and ev_hash in ledger:
+        print(f"[exp] 已推送过（evidence_hash {ev_hash[:12]}…），跳过重复 push")
+        return
+    # 入 outbox（断网兜底），再尽力上传
+    path = exp.enqueue(atom)
+    print(f"[exp] queued: {path}")
+    outcome = exp.flush()
+    if outcome.get("ok"):
+        ledger[ev_hash] = {"platform": platform, "atom_id": atom["atom_id"][:16],
+                           "ts": datetime.datetime.now().isoformat(timespec="seconds")}
+        ledger_path.write_text(json.dumps(ledger, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[exp] 自动 push 完成（platform={platform}, sent={outcome.get('sent',0)}）")
+    else:
+        print(f"[exp] 上传失败，atom 已留在 outbox（exp flush 可重传）: {outcome}", file=sys.stderr)
+
+
 if __name__ == "__main__":
     main()
+    # 渲染成功才走到这；渲染异常/退出不会执行自动 push
+    _res = sys.argv[1] if len(sys.argv) > 1 else None
+    if _res and "--no-push" not in sys.argv:
+        auto_push_to_commons(_res)
