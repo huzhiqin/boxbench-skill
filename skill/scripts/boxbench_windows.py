@@ -1085,7 +1085,7 @@ def main():
     progress("archive", "done", "原始 JSON 已保存；HTML 报告需另行渲染")
     # 经验池 push 由 render_report.py 渲染成功后自动执行（v1.10.15），
     # 此处仅标记看板环节；设备端不直接联网上传。
-    progress("exp-push", "done", "经验池上传挂接在渲染器（渲染时自动 push，幂等不重传）")
+    progress("exp-push", "running", "经验推送已就绪：本机渲染报告时自动上传（渲染器执行，幂等不重传）")
     print("OK -> %s" % out_path)
     log("完成: %s" % out_path)
     log("渲染: python scripts/render_report.py %s [输出.html] --device <型号>" % out_path)
