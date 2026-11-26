@@ -310,4 +310,7 @@ All notable changes to BoxBench Skill will be documented in this file.
 ## [1.10.12] - 2026-11-26
 
 ### Changed
-- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+- **峰值/均值双口径落地（渲染器+采集端，Windows 线）**：boxbench_windows.py C2 改流式 chunk 计时，新增 `speed_peak_tps`（1s 滑动窗口最大瞬时）/`speed_mean_tps`；C5 补峰值统计；KPI 卡「最快解码」→「解码速度（峰值/均值）」，摘要行/多模型对比表/结论行同步双口径，旧数据（无峰值字段）优雅降级
+- 渲染器 `infer_model_name()` 路径来源加**顶层 `model_path` 兜底**（引擎段被修正/覆盖时仍能反解模型名，防"预装模型"回退复发）；品牌名连字符恢复 Gyro-S/Inkling-2/Flash-Next；量化段正则支持 TQ1_0 尾段
+- SKILL.md 硬性规则 #13：解码速度必须峰值/均值并列，禁止把均值标成"最快"（推测解码引擎峰值可达均值 1.3~2 倍，实测 46.2 vs 36.3 教训）
+- 实测验证：百应 AI Max 395 Gyro-S 重测，C2 峰值 43.8 / 均值 35.6 tok/s（158 chunks），C5 峰值 47.7 / 均值 38.6，报告模型名/峰值字段全链路正确
