@@ -21,7 +21,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     except Exception:
         pass
 
-SPEC_VERSION = "1.4"
+SPEC_VERSION = "1.7"
 
 # 判定基线 (SPEC v1.1 §4.3)
 BASELINE = {
@@ -115,7 +115,9 @@ def infer_model_name(m):
     """从模型记录自动反解可读模型名（--model 未给出时的兜底，v1.11.0 起）。
     优先级: weight 名称清洗 > 权重文件名去扩展 > path 基名。
     例: HiModel_xh2_qwen3.6-35b-a3b_w4a8_256_256k_b1_1chip_2cores_v1.5.0_20260824.gguf
-        → Qwen3.6-35B-A3B(W4A8)（量化段之前的权重名段，连字符转空格后按词首大写）。"""
+        → Qwen3.6-35B-A3B(W4A8)（量化段之前的权重名段，连字符转空格后按词首大写）。
+    v1.11.1: 补充 engine.model_path / engine.model_file 来源（Strata 等引擎
+    启动命令行无 -m 参数、模型路径记录在 engine 段的场景）。"""
     import re as _re
     eng = m.get("engine") or {}
     cmd = str(eng.get("engine_cmd") or "")
@@ -123,14 +125,21 @@ def infer_model_name(m):
     mm = _re.search(r'(?:-m|--model)[= ](\S+)', cmd)
     if mm:
         path = mm.group(1)
+    # Strata/打包式引擎: 命令行无 -m, 模型文件记录在 engine 段
     path = path or str(m.get("path") or "")
+    path = path or str(eng.get("model_path") or "")
+    if not path:
+        mf = str(eng.get("model_file") or "")
+        if mf and mf not in ("未记录", "?", ""):
+            path = mf
     if not path or "<model>" in path:
         return ""
     base = _re.split(r"[\\/]", path)[-1]
     stem = _re.sub(r"\.(gguf|safetensors|onnx)$", "", base, flags=_re.I)
-    # 清洗: 去掉 HiModel_xh2_ 前缀、量化段(w4a8/Q4_K_M/int8...)及之后的规格尾段
+    # 清洗: 去掉 HiModel_xh2_ 前缀、量化段(w4a8/Q4_K_M/int8/iq3_s/tq1_0...)及之后的规格尾段
     stem = _re.sub(r"^HiModel[_-][a-z0-9]+[_-]", "", stem, flags=_re.I)
-    stem = _re.sub(r"[_-](?:w\d+a\d+|Q\d_[A-Z0-9_]+|iq\d_[a-z0-9_]+|int\d+)[_-].*$", "", stem, flags=_re.I)
+    stem = _re.sub(r"[_-](?:w\d+a\d+|Q\d_[A-Z0-9_]+|iq\d_[a-z0-9_]+|tq\d_[a-z0-9_]+|int\d+)(?:[_-].*)?$",
+                   "", stem, flags=_re.I)
     stem = stem.replace("-", " ").replace("_", " ").strip()
     if not stem:
         return ""
@@ -138,11 +147,19 @@ def infer_model_name(m):
         # 字母+数字混合(35b/a3b/mtp/w4a8) → 全大写: 35B/A3B/MTP/W4A8
         # 纯字母且已含大写(LLaMA) → 保留专有名; 纯小写单词(qwen) → 词首大写(Qwen)
         if _re.search(r"\d", tok):
+            # 例外: 品牌名+版本号(Qwen3.8/glm4) 保留品牌大小写, 只有纯规格词(35b/a3b)才全大写
+            if _re.fullmatch(r"(?i)(qwen|glm|deepseek|llama|minicpm)\d+(\.\d+)?", tok):
+                m2 = _re.match(r"(?i)([a-z]+)(\d+(?:\.\d+)?)", tok)
+                return m2.group(1)[:1].upper() + m2.group(1)[1:].lower() + m2.group(2)
             return tok.upper()
         if _re.search(r"[A-Z]", tok):
             return tok
         return tok[:1].upper() + tok[1:]
-    return " ".join(cap(t) for t in stem.split() if t)
+    out = " ".join(cap(t) for t in stem.split() if t)
+    # 官方产品名连字符恢复（分词后执行, 避免 cap 拆词）: Gyro-S / Inkling-2 / Flash-Next
+    out = (out.replace("Gyro S", "Gyro-S").replace("Inkling 2", "Inkling-2")
+              .replace("Flash Next", "Flash-Next"))
+    return out
 
 
 # ============ 脱敏 (默认开启; 对齐 boxbench_exp.py 的脱敏口径) ============
@@ -270,10 +287,20 @@ def build_util_section(mc, tops_str="50 TOPS"):
     idle = mc.get("idle_baseline") or {}
     c2 = ((mc.get("c2_short_decode") or {}).get("npu")) or {}
     c4 = ((mc.get("c4_long_ctx") or {}).get("npu")) or {}
+    # 并发阶梯段: 取实测存在阶梯中的最高档 (v1.8); 旧数据回退 conc4
+    conc_segs = []
+    for n in (32, 16, 8, 4, 2):
+        cc = ((mc.get(f"c6c7_conc{n}") or {}).get("npu")) or {}
+        if cc:
+            conc_segs.append((f"并发阶梯 {n} 路（上探最高档）", cc))
+            break
+    else:
+        c7 = ((mc.get("c6c7_conc4") or {}).get("npu")) or {}
+        if c7:
+            conc_segs.append(("C7 并发 4 路", c7))
     c6 = ((mc.get("c6c7_conc2") or {}).get("npu")) or {}
-    c7 = ((mc.get("c6c7_conc4") or {}).get("npu")) or {}
     ov = mc.get("util_overall") or {}
-    if not any([c2, c4, c7, ov]):
+    if not any([c2, c4, conc_segs, ov]):
         return ""
     def fmt(d, key="util_avg"):
         v = d.get(key)
@@ -284,7 +311,7 @@ def build_util_section(mc, tops_str="50 TOPS"):
         ("C2 短输入解码（生成阶段）", c2),
         ("C4 长上下文 prefill（~2K tok 吞入）", c4),
         ("C6 并发 2 路", c6),
-        ("C7 并发 4 路", c7),
+    ] + conc_segs + [
         ("全场综合（空闲后全部测试段）", ov),
     ]
     for name, seg in segs:
@@ -304,7 +331,7 @@ def build_util_section(mc, tops_str="50 TOPS"):
     pf_u = c4.get("util_avg"); dec_u = c2.get("util_avg")
     verdicts = []
     # 恒 0 检测: 全部段 util 均为 0 → 该平台管理工具不统计 NPU 利用率(驱动限制), 如实标注
-    all_utils = [s.get("util_avg") for s in [idle, c2, c4, c6, c7, ov] if isinstance(s, dict)]
+    all_utils = [s.get("util_avg") for s in [idle, c2, c4, c6, ov] + [seg for _, seg in conc_segs] if isinstance(s, dict)]
     if all_utils and all(u == 0 for u in all_utils if u is not None):
         verdicts.append("⚠️ 全程 NPU 利用率读数恒为 0（含推理时段）——该平台管理工具/驱动未实现该计数器，<b>不代表 NPU 未工作</b>（引擎计时正常推进、输出正常产出）。此为采集工具限制，OS 侧无法量化该 NPU 的真实算力利用率；替代口径：解码/prefill 吞吐（C2/C4）与显存/温度占用即本报告的算力利用证据链。")
     if isinstance(pf_u, (int, float)) and pf_u > 0:
@@ -430,6 +457,14 @@ def render_model_tests(c, mname):
                 tps = int(c2["reply_len"]) / float(c2["wall_s"]); tps_src = "est"
         except Exception: pass
     est_tps = tps
+    # 峰值/均值双口径 (v1.11.1 起): 采集端流式 chunk 计时实测; 旧数据无此字段优雅降级
+    # 注意: est_tps(usage 口径)本身就是持续均值, KPI 卡不得再标"最快"误导为峰值
+    spd_peak = c2.get("speed_peak_tps")
+    spd_mean = c2.get("speed_mean_tps")
+    spd_method = c2.get("speed_method", "")
+    # 流式均值与 usage 均值不一致时以 usage 为准（usage 是服务端权威统计）
+    if isinstance(spd_mean, (int, float)) and tps_src == "usage" and tps > 0:
+        spd_mean = round(tps, 1)
 
     trows = []
     def add(no, name, task, val, ok, note=""):
@@ -453,6 +488,8 @@ def render_model_tests(c, mname):
         ct = int(c2.get("completion_tokens", -1)); pt = int(c2.get("prompt_tokens", -1))
         if ct > 0 and wl > 0:
             c2val = f"{wl:.1f}s / {ct} tok = {est_tps:.1f} tok/s（usage 口径, prompt {pt} tok）"
+            if isinstance(spd_peak, (int, float)):
+                c2val += f"｜峰值 {spd_peak:.1f} tok/s（1s 窗口瞬时最大）"
         elif rl > 0:
             c2val = f"{wl:.1f}s / {rl} 字 ≈ {est_tps:.0f} 字/s（估算口径, 引擎未返回 usage）"
         else:
@@ -497,29 +534,54 @@ def render_model_tests(c, mname):
             add("C5", "长上下文解码衰减", "同 C4 长上下文会话的解码速度 vs C2",
                 "未实测（缺流式分段计时）", None,
                 esc(c5.get("error") or "旧数据无分段计时，按 SPEC 不计入通过率"))
-        drops = {}
-        for n, key, no in [(2, "c6c7_conc2", "C6"), (4, "c6c7_conc4", "C7")]:
-            cc = c.get(key, {}); okn = int(cc.get("ok", -1)); tot = int(cc.get("total", n))
+        # C6/C7: 并发能力上探 (SPEC v1.7) — 单路基准 + 2/4/8/16/32 倍增阶梯
+        conc_max = int(c.get("conc_max", 0) or 0)
+        cb = c.get("conc_baseline", {})
+        cbw = float(cb.get("wall_s", 0)) if cb else 0
+        # 兼容旧数据: 无 conc_max 时从 c6c7_conc2/conc4 推导
+        if not conc_max:
+            _o2 = int(conc2.get("ok", 0)) if conc2 else 0
+            _o4 = int(conc4.get("ok", 0)) if conc4 else 0
+            if _o4 == 4: conc_max = 4
+            elif _o2 == 2: conc_max = 2
+        # C6 行: 阶梯各档明细
+        lad_parts = []
+        for n in (2, 4, 8, 16, 32):
+            cc = c.get(f"c6c7_conc{n}", {})
+            if not cc: continue
+            okn = int(cc.get("ok", -1)); tot = int(cc.get("total", n))
             ctok = int(cc.get("completion_tokens", -1)); cwl = float(cc.get("wall_s", 0))
-            agg_tps = ctok / cwl if (ctok > 0 and cwl > 0) else 0
-            per_tps = agg_tps / n if agg_tps > 0 else 0
-            # SPEC §4.3: 全部成功 且 单路 tok/s 相对 C2 衰减 <30%（基准 = C2 usage 口径 tok/s）
-            drop = ((est_tps - per_tps) / est_tps * 100) if (est_tps > 0 and per_tps > 0) else None
-            drops[n] = drop
-            if okn == tot and agg_tps > 0:
-                cval = (f"{okn}/{tot} 成功, {cwl:.1f}s, 聚合 {agg_tps:.0f} tok/s"
-                        f"（单路 ≈{per_tps:.0f} tok/s"
-                        + (f", 较 C2 衰减 {drop:.1f}%" if drop is not None else "") + "）")
-            elif okn == tot:
-                cval = f"{okn}/{tot} 成功, {cwl:.1f}s（无 usage, 未验衰减）"
-            else:
-                cval = f"{okn}/{tot} 成功（失败）"
-            verdict = 1 if okn == tot else 0
-            if okn == tot and drop is not None and drop >= BASELINE["conc_drop_pct"]:
-                verdict = 0  # 按 SPEC: 请求虽全部成功, 单路衰减超基线判失败
-                cval += "｜衰减超 SPEC 基线, 判失败"
-            add(no, f"并发 {n} 路", f"{n} 个 200 token 生成请求同时发出",
-                cval, verdict, "SPEC: 全部成功 且 单路衰减 <30%（基准=C2 单路 tok/s）")
+            v = cc.get("verdict", "")
+            agg = ctok / cwl if (ctok > 0 and cwl > 0) else 0
+            per = agg / n if agg > 0 else (cwl / n if cwl > 0 else 0)
+            drop = ((per - cbw) / cbw * 100) if (cbw > 0 and per > 0) else None
+            seg = f"{okn}/{tot}"
+            if cwl: seg += f" {cwl:.1f}s"
+            if per: seg += f" 单路≈{per:.0f} tok/s"
+            if drop is not None: seg += f" 衰减{drop:.0f}%"
+            if v == "degraded": seg += " ⚠衰减超标"
+            elif okn < tot: seg += " ❌"
+            lad_parts.append(f"{n}路: {seg}")
+        if lad_parts:
+            _cbnote = f"单路基准 {cbw:.1f}s" + (f" / {int(cb.get('completion_tokens',0) or 0)} tok" if cb and int(cb.get("completion_tokens", 0) or 0) > 0 else "") if cbw > 0 else "旧数据无单路基准，衰减按 wall/n 近似"
+            add("C6", "并发阶梯（2/4/8/16/32）", "单路基准后逐档倍增，每档全部成功且衰减<30%才继续",
+                " ｜ ".join(lad_parts), None, _cbnote)
+        else:
+            add("C6", "并发阶梯（2/4/8/16/32）", "单路基准后逐档倍增",
+                "未采集（旧数据无阶梯明细）", None, "")
+        # C7 行: 最大无衰减并发数 (conc_max)
+        if conc_max >= 1:
+            c7val = f"<b>{conc_max} 路</b>"
+            c7ok = 1
+            c7note = "SPEC: 倍增上探至首个失败/衰减≥30%档，前一档即设备并发承载上限"
+            if conc_max >= 32:
+                c7val += "（已触顶 32 路档，实际可能更高）"
+        else:
+            c7val = "单路基准失败，未上探"
+            c7ok = 0
+            c7note = "基准请求不通过无法判定并发能力"
+        add("C7", "最大并发（conc_max）", "并发阶梯上探的实测无衰减上限",
+            c7val, c7ok, c7note)
         add("C8", "工具调用 Function Calling", "OpenAI tools API: 查询北京天气(get_weather)",
             "正确发起调用", int(c8.get("ok", -1)), "finish_reason=tool_calls 且参数正确")
         add("C9", "多轮对话记忆", "3 轮对话, 第 3 轮复述第 1 轮设备编号",
@@ -543,6 +605,9 @@ def render_model_tests(c, mname):
     stats = {
         "est_tps": est_tps,
         "tps_src": tps_src,
+        "spd_peak": spd_peak,
+        "spd_mean": spd_mean,
+        "spd_method": spd_method,
         "ttft": float(c3.get("s", 0)) if c3 else 0,
         "load_s": c.get("c1_load_s"),
         "toolcall": int(c8.get("ok", -1)) if c8 else -1,
@@ -553,6 +618,7 @@ def render_model_tests(c, mname):
         "conc4_ok": int(conc4.get("ok", 0)) if conc4 else 0,
         "conc4_total": int(conc4.get("total", 4)) if conc4 else 4,
         "conc4_wall": float(conc4.get("wall_s", 0)) if conc4 else 0,
+        "conc_max": conc_max,
         "vram": c.get("c10_vram", "N/A"),
         "c4_ok": int(c4.get("ok", -1)) if c4 else -1,
         "c2_wall": float(c2.get("wall_s", 0)) if c2 else 0,
@@ -652,6 +718,7 @@ def main():
                      f'<td class="c">{pill("⏭ 跳过","p-skip")}</td><td>{err_note}</td></tr>']
             stats = {"est_tps":0,"tps_src":"无","ttft":0,"load_s":None,"toolcall":-1,"multiturn":-1,
                      "conc2_ok":0,"conc2_total":2,"conc2_wall":0,"conc4_ok":0,"conc4_total":4,"conc4_wall":0,
+                     "conc_max":0,
                      "vram":"N/A","c4_ok":-1,"c2_wall":0,"sample":"","skipped":True,"graded_n":0,"pass_n":0,"error":err}
         else:
             trows, stats = render_model_tests(mc, mname)
@@ -689,6 +756,13 @@ def main():
         chart_script = f"<script>{_chart_js}</script>"
     else:
         chart_script = '<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>'
+    # v1.11.1: 摘要与 KPI 卡区分峰值/均值 — est_tps 是持续均值口径,
+    # 不得标"最快"误导（推测解码引擎峰值可达均值 1.3~2 倍, 用户实测 46 vs 36 教训）
+    _pk = main_stats.get('spd_peak')
+    _pk_txt = (f"；峰值（1s 窗口瞬时最大）<b>{_pk:.1f} tok/s</b>"
+               if isinstance(_pk, (int, float)) else "")
+    _sum_tps_txt = (f"解码均值 <b>{main_stats.get('est_tps',0):.1f} tok/s</b>" + _pk_txt
+                    + f"（{esc(main_name)}，{'API usage 真实 token 统计' if main_stats.get('tps_src')=='usage' else '估算口径'}）")
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -703,12 +777,11 @@ def main():
 <div class="summary"><p><b>摘要：</b>在 {esc(device)} 上对 <b>{esc(title_models)}</b> 执行 SPEC v{SPEC_VERSION} 标准实测。
 {('共 ' + str(len(rendered)) + ' 个模型，每模型 C1~C12 项测试 + 横向对比。' if is_multi else '')}
 总计 {tot_graded} 项判定，通过 {tot_pass} 项（{rate:.0f}%）。
-最快解码 <b>{main_stats.get('est_tps',0):.1f} tok/s</b>（{esc(main_name)}，{'API usage 真实 token 统计' if main_stats.get('tps_src')=='usage' else '估算口径'}）。</p></div>
+{_sum_tps_txt}。</p></div>
 """
-
     # ---- 管理层摘要（白话结论, 前置于所有技术细节, 产出质量: 可直接提交管理层）----
     def _yes(v): return "✅ " + v
-    _conc = main_stats.get('conc4_ok', 0)
+    _conc = main_stats.get('conc_max', 0)
     _tps = main_stats.get('est_tps', 0)
     _load = main_stats.get('load_s')
     # 白话场景判定: 并发+工具调用+解码速度 → 能支撑什么业务
@@ -741,8 +814,8 @@ def main():
   <div class="card"><div class="k">AI 算力</div><div class="v hl">{esc(tops)}</div><div class="k">NPU INT8</div></div>
   <div class="card"><div class="k">内存带宽</div><div class="v hl">{esc(bw)}</div><div class="k">统一内存</div></div>
   <div class="card"><div class="k">推理显存</div><div class="v">{esc(cls.get('infer_mem_gb','?'))}<small> GB 可用</small></div><div class="k">加载后占用 {esc(main_stats.get('vram','-'))}</div></div>
-  <div class="card"><div class="k">最快解码</div><div class="v">{main_stats.get('est_tps',0):.1f}<small> tok/s</small></div><div class="k">{esc(main_name)}</div></div>
-  <div class="card"><div class="k">并发能力</div><div class="v">{main_stats.get('conc4_ok',0)}<small>/4 路通过</small></div><div class="k">最优模型实测</div></div>
+  <div class="card"><div class="k">解码速度（峰值/均值）</div><div class="v">{((('%s' % ('%.1f' % main_stats['spd_peak'])) if isinstance(main_stats.get('spd_peak'),(int,float)) else '—') + '<small>/</small>' + ('%.1f' % main_stats.get('est_tps',0)))}<small> tok/s</small></div><div class="k">{esc(main_name)}｜峰值=1s 瞬时窗</div></div>
+  <div class="card"><div class="k">最大并发</div><div class="v">{main_stats.get('conc_max',0)}<small> 路无衰减</small></div><div class="k">阶梯上探实测</div></div>
   <div class="card"><div class="k">首字延迟</div><div class="v">{main_stats.get('ttft',0):.2f}<small> s</small></div><div class="k">TTFT 最优模型</div></div>
 </div>
 """
@@ -796,10 +869,14 @@ def main():
 <tr><td><b>运行配置</b></td>{''.join(f'<td class="c"><span style="font-size:12px">{esc(cfg_line(r[3]))}</span></td>' for r in rendered)}</tr>
 <tr><td><b>加载耗时 C1</b></td>{''.join(f'<td class="c">{esc(str(r[2]["load_s"]) + "s") if r[2]["load_s"] else "—"}</td>' for r in rendered)}</tr>
 <tr><td><b>解码速度 C2</b></td>"""
-        # 解码行加高亮最优
+        # 解码行加高亮最优；v1.11.1 起带峰值/均值双口径（旧数据无峰值则只显均值）
         best_tps = max((r[2]["est_tps"] for r in rendered), default=0)
         for r in rendered:
-            v = f'{r[2]["est_tps"]:.1f} tok/s' + ('' if r[2].get("tps_src") == "usage" else ' (估)')
+            _sp = r[2].get("spd_peak")
+            if isinstance(_sp, (int, float)):
+                v = f'峰值 {_sp:.1f} / 均值 {r[2]["est_tps"]:.1f} tok/s'
+            else:
+                v = f'{r[2]["est_tps"]:.1f} tok/s' + ('' if r[2].get("tps_src") == "usage" else ' (估)')
             cell = f'<span class="best">{v} ◀</span>' if r[2]["est_tps"] == best_tps and best_tps > 0 else v
             html += f'<td class="c">{cell}</td>'
         html += f'</tr>\n<tr><td><b>首字延迟 C3</b></td>'
@@ -813,18 +890,13 @@ def main():
             ok = r[2]["c4_ok"]
             cell = "✅ 正确" if ok == 1 else ("❌" if ok == 0 else "—")
             html += f'<td class="c">{cell}</td>'
-        html += f'</tr>\n<tr><td><b>并发 2 路 C6</b></td>'
+        html += f'</tr>\n<tr><td><b>最大并发 C7</b></td>'
+        best_conc = max((r[2].get("conc_max", 0) for r in rendered), default=0)
         for r in rendered:
-            s = r[2]
-            cell = f'{s["conc2_ok"]}/{s["conc2_total"]}' + (f'，{s["conc2_wall"]:.0f}s' if s["conc2_wall"] else '')
-            ok_cls = "ok" if s["conc2_ok"] == s["conc2_total"] and s["conc2_total"] > 0 else "no"
-            html += f'<td class="c"><span class="{ok_cls}">{cell}</span></td>'
-        html += f'</tr>\n<tr><td><b>并发 4 路 C7</b></td>'
-        for r in rendered:
-            s = r[2]
-            cell = f'{s["conc4_ok"]}/{s["conc4_total"]}' + (f'，{s["conc4_wall"]:.0f}s' if s["conc4_wall"] else '')
-            ok_cls = "ok" if s["conc4_ok"] == s["conc4_total"] and s["conc4_total"] > 0 else "no"
-            html += f'<td class="c"><span class="{ok_cls}">{cell}</span></td>'
+            cm = r[2].get("conc_max", 0)
+            v = f"{cm} 路" if cm else "—"
+            cell = f'<span class="best">{v} ◀</span>' if cm == best_conc and cm > 0 else v
+            html += f'<td class="c">{cell}</td>'
         html += f'</tr>\n<tr><td><b>工具调用 C8</b></td>'
         for r in rendered:
             ok = r[2]["toolcall"]
@@ -874,7 +946,7 @@ def main():
         html += f"""
 </tr>
 </tbody></table>
-<div class="legend">◀ 标记该指标最优模型。解码速度 = completion_tokens / 耗时（tok/s，API usage 口径）；标「估」为旧数据（字/s 估算）。并发行速度见各模型明细。</div>
+<div class="legend">◀ 标记该指标最优模型。解码均值 = completion_tokens / 耗时（tok/s，API usage 口径，即持续负载均速，<b>不是引擎上限</b>）；峰值 = 流式 1s 滑动窗口最大瞬时速度（推测解码引擎可达均值 1.3~2 倍）；标「估」为旧数据（字/s 估算）。并发行速度见各模型明细。</div>
 </div>
 
 <h2>四、性能对比图表</h2>
@@ -891,7 +963,7 @@ def main():
 
     # ---- 每模型实测明细 ----
     html += f'<h2>{"五" if is_multi else "三"}、{"各模型" if is_multi else ""}实测明细（SPEC v{SPEC_VERSION}）</h2>\n'
-    html += f"""<div class="note" style="margin:8px 0 14px"><b>C1~C12 导读</b>：SPEC 定义的 12 项标准化测试——C1 冷启动加载（权重→NPU 就绪耗时）｜C2 解码速度（生成 tok/s）｜C3 首字延迟 TTFT（用户体感快慢）｜C4 长上下文 prefill（长文吞入速度）｜C5 温度稳定性（持续推理温升）｜C6/C7 并发 2/4 路（多用户同时用是否撑得住）｜C8 工具调用（Agent 能力）｜C9 多轮记忆（对话上下文保持）｜C10 显存占用｜C11 视觉多模态｜C12 输出质量抽查｜C14 NPU 算力利用率（各模型明细末尾"算力利用率分析"表）。每项含"测试任务"（怎么测的）与"基线"（及格线）。</div>\n"""
+    html += f"""<div class="note" style="margin:8px 0 14px"><b>C1~C12 导读</b>：SPEC 定义的 12 项标准化测试——C1 冷启动加载（权重→NPU 就绪耗时）｜C2 解码速度（生成 tok/s）｜C3 首字延迟 TTFT（用户体感快慢）｜C4 长上下文 prefill（长文吞入速度）｜C5 温度稳定性（持续推理温升）｜C6/C7 并发上探（单路基准→倍增阶梯→最大无衰减并发）｜C8 工具调用（Agent 能力）｜C9 多轮记忆（对话上下文保持）｜C10 显存占用｜C11 视觉多模态｜C12 输出质量抽查｜C14 NPU 算力利用率（各模型明细末尾"算力利用率分析"表）。每项含"测试任务"（怎么测的）与"基线"（及格线）。</div>\n"""
     for idx, (mname, trows, stats, m) in enumerate(rendered):
         sid = f"m{idx}"
         eng_cfg_html = build_engine_cfg(m, d.get("engine"))
@@ -1011,8 +1083,8 @@ def main():
 <thead><tr><th style="width:200px">结论项</th><th>判定</th></tr></thead><tbody>
 <tr><td>综合可用性</td><td>{pill(label + f'（{rate:.0f}%）', 'p-ok' if rate>=90 else ('p-mid' if rate>=70 else 'p-no'))}</td></tr>
 <tr><td>NPU 算力利用评估</td><td>{util_concl}</td></tr>
-<tr><td>{'推荐模型' if is_multi else '测试模型'}</td><td><b>{esc(best_model)}</b>（解码 {main_stats.get('est_tps',0):.1f} tok/s，{'usage 口径' if main_stats.get('tps_src')=='usage' else '估算口径'}）</td></tr>
-<tr><td>建议并发规模</td><td>{f'<b>{main_stats.get("conc4_ok",0)} 路并发无衰减</b>（实测口径）' if not all_skipped else '未测（服务未就绪）'}</td></tr>
+<tr><td>{'推荐模型' if is_multi else '测试模型'}</td><td><b>{esc(best_model)}</b>（解码均值 {main_stats.get('est_tps',0):.1f} tok/s{'，峰值 ' + format(main_stats['spd_peak'], '.1f') + ' tok/s' if isinstance(main_stats.get('spd_peak'),(int,float)) else ''}，{'usage 口径' if main_stats.get('tps_src')=='usage' else '估算口径'}）</td></tr>
+<tr><td>建议并发规模</td><td>{f'<b>{main_stats.get("conc_max",0)} 路并发无衰减</b>（阶梯上探实测口径）' if not all_skipped else '未测（服务未就绪）'}</td></tr>
 <tr><td>Agent 场景可用性</td><td>{'✅ 工具调用 + 多轮记忆均通过' if not all_skipped and main_stats.get('toolcall')==1 and main_stats.get('multiturn')==1 else '见实测明细 C8/C9'}</td></tr>
 <tr><td>长上下文能力</td><td>{html_last_ctx or ('✅ ~2000 token prefill + 摘要正确' if not all_skipped and main_stats.get('c4_ok')==1 else '见实测明细 C4')}</td></tr>
 <tr><td>数据口径</td><td>全部数值来自本机实测（API 计时 + 管理工具读数），非厂商标称值</td></tr>
