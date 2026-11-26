@@ -304,7 +304,9 @@ def build_util_section(mc, tops_str="50 TOPS"):
             conc_segs.append(("C7 并发 4 路", c7))
     c6 = ((mc.get("c6c7_conc2") or {}).get("npu")) or {}
     ov = mc.get("util_overall") or {}
-    if not any([c2, c4, conc_segs, ov]):
+    # v1.10.13: Windows GPU 计数器路径（runtime_metrics.source=gpu-counter）也出利用率表
+    rt = mc.get("runtime_metrics") or {}
+    if not any([c2, c4, conc_segs, ov]) and not (isinstance(rt, dict) and rt.get("util")):
         return ""
     def fmt(d, key="util_avg"):
         v = d.get(key)
@@ -329,14 +331,27 @@ def build_util_section(mc, tops_str="50 TOPS"):
                     f'<td class="c">{fmt(seg, "mem_pct_avg")}</td>'
                     f'<td class="c">{temp_s}</td>'
                     f'<td class="c">{seg.get("samples", "—")}</td></tr>')
+    # v1.10.13: GPU 计数器路径（无 npu 分段字段）→ 用 runtime_metrics 出全场汇总行
+    _rt = mc.get("runtime_metrics") or {}
+    _rt_src = _rt.get("source", "")
+    if not rows and _rt_src == "gpu-counter" and isinstance(_rt.get("util"), dict):
+        _u = _rt["util"]
+        rows.append(f'<tr><td>全场综合（GPU 计数器采样，{_rt.get("samples", "—")} 样本）</td>'
+                    f'<td class="c">{_u.get("avg", 0):.0f}%/峰值 {_u.get("max", 0):.0f}%</td>'
+                    f'<td class="c">{esc(str(mc.get("c10_vram", "—")))}</td>'
+                    f'<td class="c">—</td>'
+                    f'<td class="c">{_rt.get("samples", "—")}</td>')
     if not rows:
         return ""
     # 瓶颈判读: prefill 是计算受限段, 其利用率反映真实算力发挥; 解码是访存受限, 利用率低属正常
     pf_u = c4.get("util_avg"); dec_u = c2.get("util_avg")
     verdicts = []
     # 恒 0 检测: 全部段 util 均为 0 → 该平台管理工具不统计 NPU 利用率(驱动限制), 如实标注
+    # v1.10.13: GPU 计数器路径(rt=util)有真实读数, 不触发恒 0 警告
     all_utils = [s.get("util_avg") for s in [idle, c2, c4, c6, ov] + [seg for _, seg in conc_segs] if isinstance(s, dict)]
-    if all_utils and all(u == 0 for u in all_utils if u is not None):
+    if _rt_src == "gpu-counter" and isinstance(_rt.get("util"), dict) and _rt["util"].get("avg", 0) > 0:
+        pass  # 计数器路径已有真实读数判读, 跳过恒 0 警告
+    elif all_utils and all(u == 0 for u in all_utils if u is not None):
         verdicts.append("⚠️ 全程 NPU 利用率读数恒为 0（含推理时段）——该平台管理工具/驱动未实现该计数器，<b>不代表 NPU 未工作</b>（引擎计时正常推进、输出正常产出）。此为采集工具限制，OS 侧无法量化该 NPU 的真实算力利用率；替代口径：解码/prefill 吞吐（C2/C4）与显存/温度占用即本报告的算力利用证据链。")
     if isinstance(pf_u, (int, float)) and pf_u > 0:
         if pf_u >= 70:
@@ -348,8 +363,15 @@ def build_util_section(mc, tops_str="50 TOPS"):
     if isinstance(dec_u, (int, float)) and isinstance(pf_u, (int, float)) and pf_u > 0:
         verdicts.append(f"解码段（{dec_u:.0f}%）低于 prefill 段（{pf_u:.0f}%）符合预期：自回归解码每步仅 1 token，属<b>访存受限</b>负载，算力利用率天然低——这是所有 LLM 推理的共性，不是该设备的问题")
     mem_c10 = str(mc.get("c10_vram", ""))
-    if mem_c10 and "MiB" in mem_c10:
+    if mem_c10 and ("MiB" in mem_c10 or "计数器口径" in mem_c10):
         verdicts.append(f"显存占用 {esc(mem_c10)}（加载后）——结合利用率：显存余量大意味着有上探更大模型/更大并发/更长上下文的空间")
+    _rt_util = (mc.get("runtime_metrics") or {}).get("util") or {}
+    _rt_src = (mc.get("runtime_metrics") or {}).get("source", "")
+    if isinstance(_rt_util.get("avg"), (int, float)) and _rt_src == "gpu-counter":
+        verdicts.append(
+            f"GPU 计数器全程平均 <b>{_rt_util['avg']:.0f}%</b> / 峰值 <b>{_rt_util.get('max', 0):.0f}%</b>"
+            "（Windows GPU Engine compute 引擎聚合口径，多调度器架构可 >100%；AMD 核显无独立功耗/温度计数器）——"
+            "解码吞吐与显存占用见 C2/C5/C10，采样源 runtime_metrics.source=gpu-counter")
     t = ('<div class="sub" style="font-weight:600;color:var(--txt);margin-top:14px">NPU 算力利用率分析（测试期间 1s 间隔采样）</div>'
          '<table style="margin:6px 0 8px"><thead><tr><th>阶段</th><th class="c">NPU 利用率（均值/峰值）</th>'
          '<th class="c">显存占用</th><th class="c">温度峰值</th><th class="c">样本数</th></tr></thead><tbody>'
