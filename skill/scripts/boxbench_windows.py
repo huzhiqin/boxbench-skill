@@ -33,8 +33,16 @@ import json, os, re, sys, time, socket, subprocess, datetime, argparse, threadin
 import urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
-VERSION = "1.6.0"
-SPEC_VERSION = "1.4"
+# GBK 控制台防崩溃: stdout/stderr 强制 UTF-8 (v1.3.7 渲染器同款修正, 2026-11-25 Strix Halo 实测踩坑)
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+VERSION = "1.7.0"
+SPEC_VERSION = "1.7"
 AI_PORTS = [1234, 17701, 8080, 8088, 11434, 8000, 9997]  # LM Studio 默认 1234 在最前
 
 
@@ -428,6 +436,44 @@ class PhaseC:
             body = r.read().decode("utf-8", "replace")
         return json.loads(body), time.perf_counter() - t0
 
+    def post_stream_chunk_times(self, payload, timeout=TIMEOUT):
+        """流式请求并记录每个 content chunk 的到达时间戳（相对起点秒）。
+        返回 (完整响应dict或None, [chunk_times], wall_s)。
+        chunk 时间戳用于瞬时速度统计：推测解码(DFlash2/MTP)速度弹性大，
+        均值会掩盖真实峰值，报告需同时呈现峰值与均值。"""
+        payload = dict(payload)
+        payload.update(self.no_think_field)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(self.api + "/v1/chat/completions", data=data,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        t0 = time.perf_counter()
+        parts, times = [], []
+        usage = None
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data:") or line[5:].strip() == "[DONE]":
+                    continue
+                try:
+                    chunk = json.loads(line[5:].strip())
+                except Exception:
+                    continue
+                if chunk.get("usage"):
+                    usage = chunk["usage"]
+                ch = (chunk.get("choices") or [{}])[0]
+                content = (ch.get("delta") or {}).get("content")
+                if content:
+                    parts.append(content)
+                    times.append(time.perf_counter() - t0)
+        text = "".join(parts)
+        wall = time.perf_counter() - t0
+        resp = None
+        if usage is not None:
+            resp = {"usage": usage, "content": text}
+        return resp, times, wall
+
     @staticmethod
     def usage(d):
         u = d.get("usage") or {}
@@ -476,20 +522,71 @@ class PhaseC:
             return {"skipped": "service_not_ready", "api": self.api}
 
         progress("service", "done", "模型首请求就绪；非冷启动计时")
-        progress("decode", "running", "执行短输入生成请求")
-        # C2 解码速度
-        r2, w2 = self.post({"model": self.model,
-                            "messages": [{"role": "user",
-                                          "content": "请写一段250字左右的短文，介绍人工智能在工业质检中的应用"}],
-                            "max_tokens": self.mt(400)})
-        pt2, ct2 = self.usage(r2)
-        reply2 = self.content(r2)
+        progress("decode", "running", "执行短输入生成请求（流式，采集瞬时速度）")
+        # C2 解码速度（v1.11.1 起流式采集 chunk 时间戳 → 峰值/均值双口径）
+        # 背景: 推测解码(DFlash2/MTP)速度随草稿命中率波动，均值仅为持续负载口径，
+        #       峰值反映引擎瞬时上限，两者都记录防止均值被误读为上限
+        c2_payload = {"model": self.model,
+                      "messages": [{"role": "user",
+                                    "content": "请写一段250字左右的短文，介绍人工智能在工业质检中的应用"}],
+                      "max_tokens": self.mt(400)}
+        try:
+            r2s, chunk_times, w2 = self.post_stream_chunk_times(c2_payload)
+            if r2s:
+                pt2, ct2 = int(r2s["usage"].get("prompt_tokens", -1)), int(r2s["usage"].get("completion_tokens", -1))
+            else:  # 流式未回 usage → 用非流式重试拿 usage（速度峰值仍可用流式数据）
+                r2, w2 = self.post(c2_payload)
+                pt2, ct2 = self.usage(r2)
+        except Exception as e:
+            log("C2 stream failed (%s), 回退非流式" % e)
+            r2, w2 = self.post(c2_payload)
+            pt2, ct2 = self.usage(r2)
+            chunk_times = []
+        # 瞬时速度: 相邻 content chunk 间推定 1 token（流式解码每 chunk ≈1 token，业界通用口径）,
+        # 窗口 1s 平滑抑制网络抖动毛刺; 峰值取窗口最大瞬时值
+        c2_speed = {"peak": None, "mean": None, "method": None}
+        if len(chunk_times) >= 4:
+            ts = [0.0] + list(chunk_times)  # 首 chunk 前视为起点
+            n_tok = len(ts) - 1
+            # 均值: (chunk 数-1)/末 chunk 首尾跨度，与 usage 口径互验
+            span = ts[-1] - ts[0] if ts[-1] > ts[0] else 0
+            mean_tps = (n_tok - 1) / span if span > 0 else 0
+            # 峰值: 1s 滑动窗口内最大 token 数
+            peak_tps, i = 0.0, 0
+            for j in range(len(ts)):
+                while ts[j] - ts[i] > 1.0:
+                    i += 1
+                win_tok = j - i
+                win_s = ts[j] - ts[i]
+                if win_s > 0.05 and win_tok / win_s > peak_tps:
+                    peak_tps = win_tok / win_s
+            if mean_tps > 0:
+                c2_speed = {"peak": round(peak_tps, 1), "mean": round(mean_tps, 1),
+                            "method": "流式 chunk 计时；峰值=1s 滑动窗口最大瞬时速度，均值=chunk 跨度均速",
+                            "chunks": n_tok}
+        # C12 样本：C2 正文（流式或非流式回退）优先，短回复兜底
+        try:
+            _c2_body = r2s["content"] if (r2s and r2s.get("content")) else self.content(r2)
+        except Exception:
+            _c2_body = ""
+        try:
+            r2_probe, _ = self.post({"model": self.model,
+                                     "messages": [{"role": "user", "content": "你好"}],
+                                     "max_tokens": self.mt(8)}, timeout=60)
+            c12_text = _c2_body or self.content(r2_probe)
+        except Exception:
+            c12_text = _c2_body
         c["c2_short_decode"] = {"wall_s": round(w2, 2), "prompt_tokens": pt2,
-                                "completion_tokens": ct2, "reply_len": len(reply2)}
-        c["c12_sample"] = reply2[:80]
-        log("C2: %.2fs / %s tok" % (w2, ct2))
+                                "completion_tokens": ct2, "reply_len": len(c12_text),
+                                "speed_peak_tps": c2_speed["peak"],
+                                "speed_mean_tps": c2_speed["mean"],
+                                "speed_method": c2_speed["method"],
+                                "speed_chunks": c2_speed.get("chunks")}
+        c["c12_sample"] = c12_text[:80]
+        log("C2: %.2fs / %s tok, peak %s / mean %s tok/s"
+            % (w2, ct2, c2_speed["peak"], c2_speed["mean"]))
 
-        end_step("decode", {"ok": 1 if reply2 else 0})
+        end_step("decode", {"ok": 1 if c12_text else 0})
         progress("latency", "running", "等待流式请求首个非空 content chunk")
         # C3 TTFT (首个非空 content chunk)
         try:
@@ -552,6 +649,7 @@ class PhaseC:
             t0 = time.perf_counter()
             first = last = None
             ct5 = -1
+            c5_chunk_times = []  # decode 段的 content chunk 相对时间戳
             with urllib.request.urlopen(req, timeout=180) as r:
                 for raw in r:
                     line = raw.decode("utf-8", "replace").strip()
@@ -569,6 +667,7 @@ class PhaseC:
                         if first is None:
                             first = now
                         last = now
+                        c5_chunk_times.append(now)
             if ct5 < 0:
                 ct5 = c["c4_long_ctx"].get("completion_tokens", -1)
                 ct5_src = "流式未返回 usage，回退同 prompt 的 C4 非流式 usage"
@@ -581,23 +680,40 @@ class PhaseC:
             dec_tps = ct5 / decode_s if (ct5 > 0 and decode_s > 0) else 0
             drop5 = ((single_tps - dec_tps) / single_tps * 100
                      if (single_tps > 0 and dec_tps > 0) else None)
+            c5_speed = {"peak": None, "mean": None}
+            if len(c5_chunk_times) >= 4:
+                ts5 = [0.0] + [t - first for t in c5_chunk_times]
+                span5 = ts5[-1] - ts5[0] if ts5[-1] > ts5[0] else 0
+                mean5 = (len(ts5) - 2) / span5 if span5 > 0 else 0
+                peak5, i5 = 0.0, 0
+                for j in range(len(ts5)):
+                    while ts5[j] - ts5[i5] > 1.0:
+                        i5 += 1
+                    win_tok = j - i5
+                    win_s = ts5[j] - ts5[i5]
+                    if win_s > 0.05 and win_tok / win_s > peak5:
+                        peak5 = win_tok / win_s
+                if mean5 > 0:
+                    c5_speed = {"peak": round(peak5, 1), "mean": round(mean5, 1)}
             c["c5_ctx_decode"] = {
                 "prefill_s": round(prefill_s, 3), "decode_s": round(decode_s, 3),
                 "decode_tps": round(dec_tps, 1), "completion_tokens": ct5,
+                "speed_peak_tps": c5_speed["peak"], "speed_mean_tps": c5_speed["mean"],
                 "drop_pct": round(drop5, 1) if drop5 is not None else None,
                 "ok": (1 if drop5 < 20 else 0) if drop5 is not None else None,
                 "method": "流式同请求分段（首 content chunk 前=prefill，其后=decode）；token 源：" +
                           ct5_src + "；服务若有 prompt cache 会影响 prefill 绝对值，不影响 decode 段",
             }
-            log("C5: prefill %.3fs, decode %.1f tok/s, drop %s%%"
-                % (prefill_s, dec_tps, c["c5_ctx_decode"]["drop_pct"]))
+            log("C5: prefill %.3fs, decode %.1f tok/s (peak %s), drop %s%%"
+                % (prefill_s, dec_tps, c5_speed["peak"],
+                   c["c5_ctx_decode"]["drop_pct"]))
         except Exception as e:
             log("C5 failed: %s" % e)
             c["c5_ctx_decode"] = {"ok": None, "error": str(e)}
 
         end_step("context", {"ok": 0 if c.get("c4_long_ctx", {}).get("ok") != 1 or c.get("c5_ctx_decode", {}).get("error") else 1})
-        progress("concurrency", "running", "依次执行2路和4路并发请求")
-        # C6 / C7 并发
+        progress("concurrency", "running", "并发阶梯上探: 单路基准 → 2/4/8/16/32 逐档倍增")
+        # C6 / C7 并发能力上探 (SPEC v1.7): 单路基准 → 倍增阶梯 → conc_max
         def one(i):
             try:
                 d, _ = self.post({"model": self.model,
@@ -608,19 +724,45 @@ class PhaseC:
             except Exception:
                 return 0, 0
 
-        for n in (2, 4):
-            progress("concurrency", "running", "执行 %d 路并发请求" % n)
-            t0 = time.perf_counter()
-            with ThreadPoolExecutor(max_workers=n) as ex:
-                res = list(ex.map(one, range(1, n + 1)))
-            wall = time.perf_counter() - t0
-            c["c6c7_conc%d" % n] = {"ok": sum(x[0] for x in res), "total": n,
-                                    "wall_s": round(wall, 2),
-                                    "completion_tokens": sum(max(0, x[1]) for x in res)}
-            log("C%d(并发%d): %s/%s ok in %.2fs" % (6 if n == 2 else 7, n,
-                c["c6c7_conc%d" % n]["ok"], n, wall))
-
-        end_step("concurrency", {"ok": 1 if all(c["c6c7_conc%d" % n]["ok"] == n for n in (2, 4)) else 0})
+        # 单路基准
+        t0 = time.perf_counter()
+        bok, btok = one(0)
+        bwall = time.perf_counter() - t0
+        c["conc_baseline"] = {"ok": bok, "wall_s": round(bwall, 2), "completion_tokens": btok}
+        conc_max = 0
+        if bok == 1:
+            conc_max = 1
+            for n in (2, 4, 8, 16, 32):
+                progress("concurrency", "running", "执行 %d 路并发请求" % n)
+                t0 = time.perf_counter()
+                with ThreadPoolExecutor(max_workers=n) as ex:
+                    res = list(ex.map(one, range(1, n + 1)))
+                wall = time.perf_counter() - t0
+                okn = sum(x[0] for x in res)
+                ctok = sum(max(0, x[1]) for x in res)
+                # 衰减判定: 与 boxbench.sh 同口径 (usage 折算串行基准份数, 无 usage 时退化 wall/n)
+                if okn < n:
+                    verdict = "fail"
+                else:
+                    equiv = (ctok / 200.0) if ctok > 0 else float(n)
+                    per = wall / equiv if equiv > 0 else wall
+                    drop = (per - bwall) / bwall * 100 if bwall > 0 else 0
+                    verdict = "ok" if drop < 30 else "degraded"
+                c["c6c7_conc%d" % n] = {"ok": okn, "total": n,
+                                        "wall_s": round(wall, 2),
+                                        "completion_tokens": ctok,
+                                        "verdict": verdict}
+                log("C%d(并发%d): %s/%s ok in %.2fs, verdict=%s" % (6 if n == 2 else 7, n,
+                    okn, n, wall, verdict))
+                if verdict == "ok":
+                    conc_max = n
+                else:
+                    log("并发 %d 路上探终止 (%s), conc_max=%d" % (n, verdict, conc_max))
+                    break
+        else:
+            log("⚠ 单路基准请求失败, 并发阶梯跳过")
+        c["conc_max"] = conc_max
+        progress("concurrency", "done", "并发上探结束: 最大无衰减并发 %d 路" % conc_max)
         progress("tools", "running", "验证结构化工具调用响应")
         # C8 工具调用
         try:
