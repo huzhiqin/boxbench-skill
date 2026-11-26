@@ -934,5 +934,8 @@ json.dump(d, open('$OUT','w'), ensure_ascii=False, indent=2)
 print('OK -> $OUT')
 " || { progress archive failed "JSON 组装失败，已保留 raw 文件"; echo 'JSON 组装失败' >&2; cp "$TMPD/out.json" "${OUT}.raw"; exit 1; }
 progress archive done "原始 JSON 已保存：$OUT；HTML 报告需另行渲染"
+# 经验池 push 由 render_report.py 渲染成功后自动执行（v1.10.15），
+# 此处仅标记看板环节；设备端不直接联网上传。
+progress exp-push done "经验池上传挂接在渲染器（渲染时自动 push，幂等不重传）"
 log "完成: $OUT"
 log "运行日志: $RUNLOG (过程留痕, 交付时与 JSON/报告一并归档)"
