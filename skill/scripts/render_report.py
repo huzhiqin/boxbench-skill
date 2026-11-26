@@ -132,6 +132,10 @@ def infer_model_name(m):
         mf = str(eng.get("model_file") or "")
         if mf and mf not in ("未记录", "?", ""):
             path = mf
+    if not path:
+        # 顶层兜底: boxbench_windows.py 单模型模式把路径写在结果 JSON 顶层 model_path
+        # (人工/脚本修正 engine 段时容易抹掉 engine.model_path, 顶层字段更稳)
+        path = str(m.get("model_path") or "")
     if not path or "<model>" in path:
         return ""
     base = _re.split(r"[\\/]", path)[-1]
