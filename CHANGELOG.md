@@ -356,3 +356,9 @@ All notable changes to BoxBench Skill will be documented in this file.
 - **看板 exp-push 事件语义修正（用户反馈驱动）**：归档完成后看板不再直接亮"完成"——boxbench.sh / boxbench_windows.py 归档时改发 `running` 状态（前端 loader 进行中动画），真实上传仍由本机渲染器在渲染报告成功后自动 push
 - boxbench_live.py 进程退出处理特判 exp-push：保持 running 并改写文案为"等待本机渲染报告时自动上传"，不再被误标为"执行中断"异常（原逻辑会把进程退出时所有 running 阶段强制标 failed）
 - 离线模拟验证 PASS（事件流全链路）+ py_compile / bash -n 语法检查通过
+
+## [1.10.18] - 2026-11-26
+
+### Fixed
+- **看板 exp-push 收尾语义再修正（WorkClaw 实测反馈）**：v1.10.17 的"进程退出后保持 running 转圈"被实测判定为"卡死"误观感——收尾时落定为「已执行」+ 详情注明"真实上传由本机渲染报告时自动执行"（与 WorkClaw 本地补丁行为一致，上游采纳）
+- 设备端归档时发 running（进行中动画）的行为保持不变：测试运行期间转圈、进程结束落定对勾
