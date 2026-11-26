@@ -284,3 +284,25 @@ All notable changes to BoxBench Skill will be documented in this file.
 
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+## [1.10.11] - 2026-11-18
+
+### Fixed
+- **阶段 E 三修（2026-11-18 m1000 实测，5/5 跑通）**：
+  1. `oc_send` 的 OpenClaw CLI 形式随版本漂移：`openclaw --non-interactive --message` 在 2026.5.x 起报 `Unknown command`。改为按 `--help` 自动选新旧形式（agent 模式用 `openclaw agent --session-id bb_<ts> --message`，每条用例独立 session，避免历史累积拖慢+污染判据）
+  2. `wall_s` 空值导致最终 JSON `json.loads` 失败（`$(...)` 捕获 stdout 时 `OC_WALL_S` 在子 shell 丢失）：改为 `$TMPD/oc_wall` 落盘回读，且写入必须在计时计算之后
+  3. 非交互 SSH 下 `openclaw`/`node` 不在 PATH（用户态装于 `~/.local`）：`phase_agent` 开头补齐 `~/.local/node/bin`、`~/.local/bin`、`~/.npm-global/bin`、`/usr/local/bin`
+- `collect_engine_info`：`--version` 首行是构建号（`version: 6043 (hash) ...`）时不得当 engine_name（会让经验库平台键变成 `version:`）；改为优先取产品标识，取不到回退引擎目录名（houmo-HLIELLama-xh2）；EBUILD 记录完整版本串
+
+### Added
+- PLATFORM_NOTES `houmo-HLIELLama-xh2`：新增已踩坑 #12/#13/#14（上述三修）、OpenClaw 阶段 E 接入本地 llama-server 的可复用配方（provider 短 id 映射 + gateway --allow-unconfigured + agent --session-id）、阶段 E 跑通基线（E2~E6 68~81s/轮，5/5）
+
+## [1.11.0] - 2026-11-19
+
+### Changed
+- **C6/C7 并发测试重设计（SPEC v1.7 / boxbench.sh v1.8 / boxbench_windows.py v1.7.0）**：由固定 2/4 路"能不能撑住"改为**并发能力上探**——单路基准（与阶梯同规格 200 max_tokens 请求）→ 2/4/8/16/32 倍增阶梯，每档全部成功且单路衰减 <30% 才继续，首个失败档的前一档即**最大无衰减并发 conc_max**
+  - JSON 新增 `conc_baseline` / `c6c7_concN.verdict` / `conc_max` 字段；阶梯上界 32 路，触顶标注"实际可能更高"
+  - 衰减口径：有 usage 按"本档完成 token 量折算串行基准份数"修正；无 usage 退化 wall/路数（引擎并发响应不回 usage 的已知坑兜底）
+- 渲染器：C6 行改阶梯各档明细（ok/耗时/单路 tok/s/衰减%），C7 行改"最大并发 conc_max"；KPI 卡/管理层摘要/结论"建议并发规模"/多模型对比表全部切换 conc_max 口径；NPU 利用率分段自动取上探最高档
+- 旧 JSON 兼容：无 conc_max 时渲染器自动从 c6c7_conc2/conc4 推导（4 路全过=4，否则 2 路全过=2）
+- live 看板并发阶段描述同步更新；SPEC.md 升 v1.7，SKILL.md SPEC 引用同步
+- 已用 20261118 真实历史 JSON（旧结构）+ 新结构 mock 数据双路径回归渲染验证
