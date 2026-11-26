@@ -33,7 +33,7 @@ STAGES = [
     ("service", "服务就绪", "C1 · model.ready", "box", "检查推理服务；多模型模式记录加载过程。"),
     ("decode", "解码速度", "C2 · decode.tokens", "bolt", "通过真实 API usage 采集解码速度。"),
     ("context", "长上下文", "C4 / C5 · context", "align-left", "采集长输入响应；Windows 同时采集解码衰减。"),
-    ("concurrency", "并发测试", "C6 / C7 · concurrent", "arrows-split", "分别测试 2 路、4 路并发请求。"),
+    ("concurrency", "并发测试", "C6 / C7 · concurrent", "arrows-split", "单路基准 → 2/4/8/16/32 倍增上探，测出最大无衰减并发。"),
     ("tools", "工具调用", "C8 · function.call", "tool", "验证结构化工具调用响应。"),
     ("memory", "多轮记忆", "C9 · conversation", "messages", "验证模型是否记住前文的设备编号。"),
     ("resources", "运行资源", "C10 · accelerator", "chart-dots", "采集显存与可用的加速器运行信息。"),
