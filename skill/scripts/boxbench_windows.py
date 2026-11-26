@@ -1017,7 +1017,7 @@ def main():
     args = ap.parse_args()
     print("@@BOXBENCH_EVENT " + json.dumps(dict(type="plan", stages=[
         "hardware", "inventory", "classify", "service", "decode", "latency", "context",
-        "concurrency", "tools", "memory", "resources", "archive"])), file=sys.stderr, flush=True)
+        "concurrency", "tools", "memory", "resources", "archive", "exp-push"])), file=sys.stderr, flush=True)
 
     now = datetime.datetime.now().astimezone()
     out_path = args.out or "boxbench_results_%s.json" % now.strftime("%Y%m%d_%H%M%S")
@@ -1083,6 +1083,9 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     progress("archive", "done", "原始 JSON 已保存；HTML 报告需另行渲染")
+    # 经验池 push 由 render_report.py 渲染成功后自动执行（v1.10.15），
+    # 此处仅标记看板环节；设备端不直接联网上传。
+    progress("exp-push", "done", "经验池上传挂接在渲染器（渲染时自动 push，幂等不重传）")
     print("OK -> %s" % out_path)
     log("完成: %s" % out_path)
     log("渲染: python scripts/render_report.py %s [输出.html] --device <型号>" % out_path)
