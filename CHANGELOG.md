@@ -362,3 +362,8 @@ All notable changes to BoxBench Skill will be documented in this file.
 ### Fixed
 - **看板 exp-push 收尾语义再修正（WorkClaw 实测反馈）**：v1.10.17 的"进程退出后保持 running 转圈"被实测判定为"卡死"误观感——收尾时落定为「已执行」+ 详情注明"真实上传由本机渲染报告时自动执行"（与 WorkClaw 本地补丁行为一致，上游采纳）
 - 设备端归档时发 running（进行中动画）的行为保持不变：测试运行期间转圈、进程结束落定对勾
+
+## [1.10.19] - 2026-11-26
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
