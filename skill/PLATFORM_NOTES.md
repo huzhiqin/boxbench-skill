@@ -29,6 +29,10 @@
 8. **后台采样器 + 裸 `wait` 死锁**（boxbench v1.5 首测踩坑）：util_start 的永循环后台子 shell 会让 C6/C7 并发段的裸 `wait` 永远等下去。修复：并发 curl 记录 `$!` 后 `wait $PIDS`；采样器启动必须 `> /dev/null 2>&1 &` 防止 stdout 污染结果文件。任何在测试期间加"后台监控进程"的改造都要检查所有裸 wait。
 9. **thinking 开启 = 空回复 + 工具调用失效**（2026-11-09 E300 实测）：思考模型（如 Qwen3.6）开启 thinking 时，思考内容会挤占输出 token，导致 content 为空、function calling 无法触发。接入智能体框架或跑 C8 工具调用必须显式 `chat_template_kwargs: {"enable_thinking": false}`（boxbench.sh 已内置）。需要 thinking 输出时，必须相应放大 max_tokens 预算。
 10. **空 content 先查 `reasoning_content` 字段**（2026-11-09 排查经验）：响应 content 为空时，先检查 message 里是否有 `reasoning_content`（reasoning 模型可能把输出放进该字段）及 `finish_reason`，再怀疑服务/模板问题。排查顺序：message keys → reasoning_content/content 特殊 token → finish_reason。
+11. **阶段 E 自动安装需要 sudo**（2026-11-18 实测）：官方 `install.sh` 要更新包索引/装 build tools/配 NodeSource 源，全部走 sudo。dev 账号无免密 sudo 时在第 1 步即中止，`phase_e` 落 `openclaw_autoinstall_failed`，渲染器措辞写成"网络受限或依赖缺失"，**实际是权限问题**——排查先看 `boxbench_run_*.log` 里的 `sudo: a terminal is required`。测前若想跑通阶段 E：先配免密 sudo，或手工装好 OpenClaw 后用 `BOX_OPENCLAW=$(which openclaw)`；只想跑 C 阶段可 `BOX_AGENT_SKIP=1` 省 1~3 分钟。
+12. **阶段 E 的 CLI 形式随版本漂移**（2026-11-18 实测）：boxbench.sh 早期用 `openclaw --non-interactive --message "..."` 发对话，但 OpenClaw 2026.5.x 起该顶层形式已不存在，报 `Error: Unknown command: openclaw hi`（把 message 误当子命令）。正确形式：`openclaw agent --session-id <key> --message "..."`（`agent` 子命令经网关跑一轮对话，stdout 为纯文本回复）。`oc_send` 已改为按 `--help` 是否含 `--non-interactive` 自动选新旧形式，且**每条用例独立 `--session-id`**——共用 session 会累积历史，后续请求越来越慢并污染判据。
+13. **`oc_send` 副作用变量被命令替换子 shell 吞掉 → JSON 组装失败**（2026-11-18 连踩两轮）：`wall_s` 靠全局 `OC_WALL_S` 传回，但调用方 `R=$(oc_send ...)` 捕获 stdout 时整个函数在子 shell 里跑，`OC_WALL_S` 赋值丢失 → phase_e 里 `"wall_s":` 后为空 → 最终 `python3 json.loads` 报 `Expecting value: line N`。修复：`oc_send` 结尾把耗时 `printf` 落盘 `$TMPD/oc_wall`，调用方 `OC_WALL_S=$(cat "$TMPD/oc_wall")` 读回。**"函数副作用全局变量 + `$(...)` 捕获 stdout" 的组合必踩此坑**；且 `OC_WALL_S` 的 `printf` 必须在计时 T1 计算之后（先写=写空值）。
+14. **非交互 SSH 下 `openclaw`/`node` 不在 PATH**（2026-11-18 实测）：用户态 Node 在 `~/.local/node/bin`、openclaw 在 `~/.local/bin`，非交互 SSH 默认 PATH 不含这两处 → `command -v openclaw` 为空，且 openclaw shebang 是 `#!/usr/bin/env node`，直接报 `env: "node": 没有那个文件或目录`。修复：`phase_agent` 开头把 `~/.local/node/bin`、`~/.local/bin`、`~/.npm-global/bin`、`/usr/local/bin` 依次补进 PATH 再探测；远程命令里显式 `export PATH=$HOME/.local/node/bin:$HOME/.local/bin:$PATH`。
 
 ### ✅ 已验证可用
 
@@ -39,6 +43,7 @@
   - `model-cli list` / `ps` / `run` / `stop` 管理本地模型
 - **1chip Stable 可跑大模型**（2026-11 快照）：Qwen3.6-35b-a3b（W4A8）、Qwen3.8-27b-mtp（W4A8）、GPT-OSS_20b、Gemma4_26b-a4b、Qwen3.5_9b
 - **磁盘清理参考**：旧版模型/tar 包在 `~/houmoAI/houmo/` 下，当前版本模型在 `1_model/`，删除旧版不影响现役服务
+- **OpenClaw 阶段 E 接入本地模型（2026-11-18 跑通，5/5）**：设备 OpenClaw 2026.5.7（用户态装于 `~/.local`，Node v22.14.0）。接法：① `openclaw config patch --file xx.json5` 写 `models.providers.houmo`（`baseUrl=http://127.0.0.1:17701/v1`、`api=openai-completions`、`apiKey` 任意占位、models[0] 用**短 id** + `compat.toolSchemaProfile="llamacpp"` + `supportsTools=true` + `reasoning:false` + `contextWindow/maxTokens`），`agents.defaults.model.primary=houmo/<短id>`；② `nohup openclaw gateway --allow-unconfigured > ~/oc_gateway.log 2>&1 &`（首次自动生成 gateway token 存 config，端口 18789 回环）；③ 阶段 E 用 `openclaw agent --session-id bb_<ts> --message "..."` 发用例。llama-server 真实 model id 是完整长文件名，provider 里用短 id 由 OpenClaw 映射即可，无需匹配。
 
 ### 📊 实测基线（可用作跨设备对比锚点）
 
@@ -50,6 +55,9 @@
 > 2026-11-11 boxbench v1.5 复测（usage 口径覆盖旧估算值）。NPU 利用率计数器不可用（见已踩坑 #7）。
 > 2026-11-17 再次复测（同一台 m1000，v1.9.1 脚本 collect 模式）：C2 解码 174tok/7.26s≈24 tok/s、TTFT 0.4s、显存 3.8G/31.4G、并发 2/4 全过、温度峰值 28.6℃——与基线一致，复现稳定。注意并发段 usage.completion_tokens 返回 0（引擎并发响应不回 usage），并发速度只能按 wall_s 判衰减。
 > 2026-11-17 三次复测（同一台 m1000，192.168.81.82，v1.10.1 脚本 collect 模式，SPEC v1.4）：C2 解码 164tok/6.92s=23.7 tok/s、TTFT 0.40s、显存 3880MiB/31367MiB、并发 2 路 9.6s / 4 路 22.4s 全过、工具调用/多轮召回通过、温度峰值 29.9℃、设备档位 D4——与基线一致，复现稳定（当天第三次独立验证）。HTML 报告已产出并过脱敏/离线自检。
+> 2026-11-18 复测（同一台 m1000，192.168.81.82，v1.10.3 脚本 collect 模式，SPEC v1.5）：设备冷启动后首次测试，服务健康探测 503→200 用时约 105s（开机负载 8.0，GNOME 桌面占用 CPU）。C2 解码 165tok/6.87s=**24.0 tok/s**、TTFT 0.36s、显存 4478MiB/31367MiB、并发 2 路 10.5s / 4 路 20.6s 全过、工具调用/多轮通过、温度峰值 35.3℃、档位 D4——与基线一致。注意：本机磁盘仅余 11G（95G 用 89%），多模型测试的前置预检会因此跳过部分模型；本机未装 OpenClaw，阶段 E 自动跳过。C5 补测（流式分段）：短上下文 52.0 char/s → 长上下文约6400字 43.1 char/s，衰减 17.2%（<20% 基线，通过）。
+> 2026-11-18 正式测试（同一台 m1000，192.168.81.82，**v1.10.9 脚本 multi 模式**，SPEC v1.6）：按硬性规则 #12 用 multi 起服务计时 C1——**加载 111s**、C2 解码 179tok/7.37s=**24.3 tok/s**、TTFT 0.36s、C4 长上下文 1050tok/2.95s、并发 2 路 10.6s / 4 路 21.0s 全过、工具调用/多轮通过、显存 4538MiB/31367MiB、温度峰值 36.4℃、档位 D4，通过率 8/8——与基线一致。**新坑 #11：阶段 E 自动安装需 sudo**，dev 账号无免密 sudo，install.sh 在"更新包索引"即中止（脚本误报为"网络受限或依赖缺失"，实际是权限问题），phase_e 记为 openclaw_autoinstall_failed。
+> 2026-11-18 **阶段 E 跑通**（同一台 m1000，192.168.81.82，脚本 v1.12.0 三修，SPEC v1.6，multi 取证轮）：设备 OpenClaw 2026.5.7 + 网关接本地 llama-server(17701)，**E1~E6 全过（5/5，独立分节不计 C 通过率）**——E2 端到端 79.6s（1+1=2）、E3 单工具 81.4s（无内置 calc，用 shell 算术得 3288）、E4 多步链 75.7s（590）、E5 输出预算 805 字符未截断、E6 纯文本回退 68.5s（北京）。端到端单轮 68~81s（35B 的 Agent 框架开销，正常）。同轮阶段 C：C1 加载 110s、C2 解码 170tok/7.04s≈24.1 tok/s、TTFT 0.36s、并发 2 路 10.2s / 4 路 19.7s 全过、工具/多轮过、显存 4810MiB/31367MiB、温度峰值 37.6℃、档位 D4。本轮修 3 坑（#12 CLI 形式 / #13 wall_s 子 shell / #14 PATH）；**前两轮阶段 E 其实全过但 JSON 组装失败无法归档**——教训：阶段 E "全过" 要用修复后 `json.loads` 能正常解析校验，不能只看各 ok 字段。
 
 ### 🎯 本平台选型结论（2026-11-11，利用率优先）
 
@@ -85,8 +93,13 @@
 > Auto-generated from the public Commons. Trust tiers: verified (≥2 independent sources) / curated (operator-confirmed).
 > Local measurements always win on conflict; Commons entries are advisory.
 
+#### Capabilities (works)
+- ran on houmo-HLIELLama-xh2 [curated ×1]
+
 #### Baselines
-- Qwen3.6-35B-A3B(W4A8) w4a8: **23.59 tok/s** [curated ×1]
+- Qwen3.8-27b-mtp(W4A8): **2.16 tok/s** [curated ×1]
+- Qwen3.6-35B-A3B(W4A8) w4a8: **23.59 tok/s** [curated ×3]
+- unknown: **24.02 tok/s** [verified ×2]
 <!-- BOXBENCH-COMMONS:END -->
 
 
