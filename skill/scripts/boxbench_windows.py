@@ -220,7 +220,10 @@ def cuda_version():
 
 
 def gpu_runtime_sample():
-    """单次运行时采样: util% / power W / temp C（多卡取均值）, 供阶段C 全程采样."""
+    """单次运行时采样: util% / power W / temp C（多卡取均值）, 供阶段C 全程采样.
+    v1.10.13: nvidia-smi 不可用时回退 Windows GPU Engine 性能计数器
+    （AMD 核显/独显通吃, 如 Strix Halo Radeon 8060S; util 为各 compute 引擎实例之和,
+      多调度器可 >100%, 渲染报告时须标注口径）。"""
     try:
         r = subprocess.run(
             ["nvidia-smi", "--query-gpu=utilization.gpu,power.draw,temperature.gpu",
@@ -230,11 +233,63 @@ def gpu_runtime_sample():
             p = [x.strip() for x in line.split(",")]
             if len(p) >= 3:
                 vals.append((float(p[0]), float(p[1]), float(p[2])))
+        if vals:
+            return (sum(v[0] for v in vals) / len(vals),
+                    sum(v[1] for v in vals) / len(vals),
+                    sum(v[2] for v in vals) / len(vals))
+    except Exception:
+        pass
+    # AMD/核显回退: GPU Engine 计数器 (推理进程 compute 引擎聚合)
+    return _ps_gpu_engine_sample()
+
+
+_GPU_PS_CACHE = {}
+
+def _ps_gpu_engine_sample():
+    """Windows 性能计数器采样: 返回 (util%, 0.0, 0.0)。
+    自动识别占显存最大的推理进程 LUID, 聚合其 compute 引擎实例利用率。
+    温度/功耗计数器 AMD 核显不提供, 记 0（渲染端按 0 值隐藏）。"""
+    try:
+        pid = _GPU_PS_CACHE.get("pid")
+        if not pid:
+            # 找 Dedicated Usage 最大的进程实例 → 推理进程
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage' -MaxSamples 1).CounterSamples | "
+                 "Sort-Object CookedValue -Descending | Select-Object -First 1 | "
+                 "ForEach-Object { if($_.InstanceName -match 'pid_(\\d+)'){ $matches[1] } }"],
+                capture_output=True, timeout=20)
+            pid = r.stdout.decode("utf-8", "replace").strip()
+            if not pid.isdigit():
+                return None
+            _GPU_PS_CACHE["pid"] = pid
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "$t=0.0; (Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -MaxSamples 1).CounterSamples | "
+             "Where-Object { $_.InstanceName -like '*pid_%s*engtype_compute*' } | "
+             "ForEach-Object { $t += $_.CookedValue }; "
+             "'{0:N1}' -f $t" % pid],
+            capture_output=True, timeout=20)
+        util = float(r.stdout.decode("utf-8", "replace").strip() or -1)
+        if util < 0:
+            return None
+        return (min(util, 999.0), 0.0, 0.0)
+    except Exception:
+        return None
+
+
+def gpu_vram_counters():
+    """GPU 性能计数器读显存（AMD 回退路径）: 返回 {name_hint, mem_used_gb} 或 None."""
+    try:
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "(Get-Counter '\\GPU Adapter Memory(*)\\Dedicated Usage' -MaxSamples 1).CounterSamples | "
+             "Where-Object { $_.CookedValue -gt 1GB } | ForEach-Object { '{0:N1}' -f ($_.CookedValue/1GB) }"],
+            capture_output=True, timeout=20)
+        vals = [float(x) for x in r.stdout.decode("utf-8", "replace").split() if x.strip()]
         if not vals:
             return None
-        return (sum(v[0] for v in vals) / len(vals),
-                sum(v[1] for v in vals) / len(vals),
-                sum(v[2] for v in vals) / len(vals))
+        return {"name_hint": "GPU (性能计数器)", "mem_used_gb": round(sum(vals), 1)}
     except Exception:
         return None
 
@@ -803,27 +858,45 @@ class PhaseC:
 
         end_step("memory", c.get("c9_multiturn", {}))
         progress("resources", "running", "读取显存与GPU运行采样")
-        # C10 显存
+        # C10 显存: nvidia-smi 优先, AMD/核显回退 GPU Adapter Memory 计数器 (v1.10.13)
         gpus = nvidia_smi()
-        c["c10_vram"] = ("; ".join("GPU%s %s/%s MiB" % (g["index"], g["mem_used_mib"],
-                                    g["mem_total_mib"]) for g in gpus)) if gpus else "N/A"
+        c10_src = "nvidia-smi"
+        if not gpus:
+            vcnt = gpu_vram_counters()
+            if vcnt:
+                c["c10_vram"] = "%s 已用约 %.1f GB (专用显存, 计数器口径)" % (
+                    vcnt["name_hint"], vcnt["mem_used_gb"])
+                c10_src = "gpu-counter"
+            else:
+                c["c10_vram"] = "N/A"
+        else:
+            c["c10_vram"] = "; ".join("GPU%s %s/%s MiB" % (g["index"], g["mem_used_mib"],
+                                        g["mem_total_mib"]) for g in gpus)
         log("C10 vram: %s" % c["c10_vram"])
 
-        progress("resources", "done" if gpus else "skipped", "显存采集结束" if gpus else "nvidia-smi 未提供显存数据")
+        progress("resources", "done" if (gpus or c10_src == "gpu-counter") else "skipped",
+                 "显存采集结束" if (gpus or c10_src == "gpu-counter") else "无可用 GPU 显存采集手段")
         stop.set()
         if samples:
             def _stat(i):
                 v = [s[i] for s in samples]
                 return {"avg": round(sum(v) / len(v), 1), "max": round(max(v), 1),
                         "min": round(min(v), 1)}
+            _src = ("nvidia-smi 采样（多卡均值，0.4s 间隔）"
+                    if c10_src == "nvidia-smi" else
+                    "Windows GPU Engine 性能计数器（AMD/核显回退路径，0.4s 间隔）；"
+                    "util=推理进程 compute 引擎实例之和，多调度器架构可 >100%")
             c["runtime_metrics"] = {
                 "samples": len(samples), "util": _stat(0), "power_w": _stat(1),
-                "temp_c": _stat(2),
-                "note": "阶段C 全程 nvidia-smi 采样（多卡均值，0.4s 间隔）",
+                "temp_c": _stat(2), "source": c10_src, "note": _src,
             }
-            log("runtime: util avg %.1f%% / power avg %.1fW"
+            if c10_src != "nvidia-smi":
+                # 计数器路径无功耗/温度, 置 None 让渲染端隐藏而不是显示 0
+                c["runtime_metrics"]["power_w"] = None
+                c["runtime_metrics"]["temp_c"] = None
+            log("runtime: util avg %.1f%% / power avg %.1fW (src=%s)"
                 % (c["runtime_metrics"]["util"]["avg"],
-                   c["runtime_metrics"]["power_w"]["avg"]))
+                   (c["runtime_metrics"]["power_w"] or {}).get("avg", 0) or 0, c10_src))
 
         notes = ["C1 冷启动加载未测：服务由外部预先启动，未做服务重启计时（禁止估算）；"
                  "需要时在 LM Studio/引擎中重新加载模型并自行计时后手工并入报告。",
