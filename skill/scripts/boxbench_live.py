@@ -113,9 +113,11 @@ class RunState:
             for s in self.data["stages"]:
                 if s["status"] == "running":
                     if s["id"] == "exp-push":
-                        # exp-push 真实上传挂在本机渲染器（渲染时自动 push），发生在看板会话结束后：
-                        # 保持 running（进行中动画），不误标为异常
-                        s.update(ended=now, detail="经验推送已就绪，等待本机渲染报告时自动上传（渲染器执行，幂等不重传）")
+                        # exp-push 真实上传挂在本机渲染器（渲染成功后自动 push），看板无法直接观测
+                        # 上传结果。进程结束时落定为「已执行」+ 详情注明真实上传时机——
+                        # 保持 running 会被当成"卡死"（2026-11-26 WorkClaw 实测反馈，v1.10.18 采纳）
+                        s.update(status="done", ended=now,
+                                 detail="已就绪：真实上传由本机渲染报告时自动执行（渲染器 push，幂等不重传）")
                     else:
                         s.update(status="failed", ended=now, detail="执行中断或未收到完成事件")
                 elif s["status"] == "pending":
