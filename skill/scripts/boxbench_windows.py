@@ -417,7 +417,9 @@ def phase_classify(mem_total_gb, vram_total_gb):
     # 独立加速卡取 min(系统内存, 卡显存合计); 无卡取系统内存
     infer_mem = min(mem_total_gb, vram_total_gb) if vram_total_gb > 0 else mem_total_gb
     igb = int(infer_mem)
-    if igb >= 64:
+    if igb >= 62:
+        # 62GB 即判 D5：BIOS carve-out/系统占用会让 64GB 统一内存报成 60~63GB，
+        # 按 64 硬卡会把这些旗舰设备误判成 D4（百应 AI Max 395 实测踩中，SPEC 注释"64GB 实际约 60GB+"）
         tier = "D5"
     elif igb >= 28:
         tier = "D4"
