@@ -367,3 +367,11 @@ All notable changes to BoxBench Skill will be documented in this file.
 
 ### Changed
 - 1.10.18 补传：GitHub 端 boxbench_live.py 首次上传失败、Gitee 端 CHANGELOG 上传失败，本轮强制同步补齐（内容同 1.10.18）
+
+## [1.10.20] - 2026-11-27
+
+### Added
+- **内置浏览器 404 诊断规则（CDP 中继型缺陷，WorkClaw 实测）**：部分 Agent 内置浏览器经 CDP relay 连接，访问看板 `127.0.0.1` URL 时在**中继侧**解析——中继机器上没有看板服务，返回的是中继自己的 404，与看板服务无关
+  - SKILL.md 硬性规则 #9 与第 2 步新增降级路径：curl 同 URL 自证 200（服务正常）→ 不要重试内置浏览器（重试必败）→ 立即改系统浏览器弹出或 URL 原文发用户手动打开
+  - RUNBOOK 异常对照表新增 A-11：症状/根因/三方对照实验（curl 直连 200、错 token 404、同机静态服务 200）/四步处理
+  - 看板保留期已过 → `--replay boxbench_live_*.jsonl` 重演，无需重跑测试
