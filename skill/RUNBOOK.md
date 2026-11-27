@@ -93,6 +93,7 @@ python3 scripts/render_report.py boxbench_results_XXX.json 报告.html --device 
 | A-8 | 模型加载必崩（GGML_ASSERT） | NPU 不认普通 GGUF | 查经验库"已踩坑"：需专用转换格式（如 xh2），走 model-cli pull |
 | A-9 | PowerShell 重定向后脚本在设备上跑不了 | PS 5.1 `>` 默认 UTF-16LE | `Set-Content -Encoding UTF8` 或直接 scp（勿经 PS 重定向） |
 | A-10 | thinking 模型 C8 工具调用失败 | 思考内容挤占输出 token | 脚本已内置 `enable_thinking:false`；手动测试时同理（PLATFORM_NOTES 坑 #9） |
+| A-11 | Agent 内置浏览器打开看板 URL 显示 404/空白 | 内置浏览器经 CDP 中继连接，`127.0.0.1` 在**中继侧**解析——中继那台机器上没有看板服务，返回的是中继自己的 404，**不是看板服务的 404**（2026-11-27 WorkClaw 实测：curl 直连同 URL 200、错 token 路径 404、同机静态服务 200，三方对照证实） | ① 先 `curl -s -o /dev/null -w "%{http_code}" $URL` 自证服务正常；② 不要重试内置浏览器（CDP relay 场景重试必败）；③ 立即把 URL 原文发用户用**系统浏览器**打开（系统浏览器在本机回环内直连可达）；④ 看板保留期已过 → `--replay boxbench_live_*.jsonl` 重演 |
 
 ## 产物归档清单（每台设备）
 
