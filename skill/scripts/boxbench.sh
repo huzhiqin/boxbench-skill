@@ -515,7 +515,8 @@ phase_classify() {
     [ -n "$V" ] && ACC_MEM_GB=$(( V / 1024 ))
   fi
   INFER_MEM=${ACC_MEM_GB:-$MEM_GB}
-  if   [ "$INFER_MEM" -ge 64 ]; then TIER=D5
+  # 62GB 即判 D5：carve-out/系统占用会让 64GB 统一内存报成 60~63GB（百应 395 实测踩中）
+  if   [ "$INFER_MEM" -ge 62 ]; then TIER=D5
   elif [ "$INFER_MEM" -ge 28 ]; then TIER=D4
   elif [ "$INFER_MEM" -ge 14 ]; then TIER=D3
   elif [ "$INFER_MEM" -ge 7 ];  then TIER=D2
