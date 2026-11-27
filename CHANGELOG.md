@@ -375,3 +375,14 @@ All notable changes to BoxBench Skill will be documented in this file.
   - SKILL.md 硬性规则 #9 与第 2 步新增降级路径：curl 同 URL 自证 200（服务正常）→ 不要重试内置浏览器（重试必败）→ 立即改系统浏览器弹出或 URL 原文发用户手动打开
   - RUNBOOK 异常对照表新增 A-11：症状/根因/三方对照实验（curl 直连 200、错 token 404、同机静态服务 200）/四步处理
   - 看板保留期已过 → `--replay boxbench_live_*.jsonl` 重演，无需重跑测试
+
+## [1.10.20] - 2026-11-27
+
+### Fixed
+- **D5 档位门槛 64GB→62GB（用户反馈驱动）**：BIOS carve-out/系统占用会让 64GB 统一内存报成 60~63GB（百应 AI Max 395 实测 63GB 被误判 D4），62GB 即判 D5；boxbench_windows.py + boxbench.sh 双端同步修改，回归 9 用例通过
+- **D5 定位文案修正**：渲染器 TIER_DESC 与 HARDWARE_MODEL_MATRIX.md 从"70B 级/70B~80B"扩为"70B~125B 级"——Qwen3.8-Flash-Next 实为 125B-A6B 大 MoE，三值量化 Gyro-S 58GB 属 M5 区间（文档 M5 行同步补充低比特 MoE 体积说明），D5 模型清单补 Flash-Next IQ3_S/Gyro-S 实测条目
+
+## [1.10.21] - 2026-11-27
+
+### Changed
+- 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
