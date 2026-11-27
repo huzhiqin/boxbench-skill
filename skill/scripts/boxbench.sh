@@ -25,7 +25,7 @@
 #     BOX_AGENT_AUTOINSTALL=0  关闭 OpenClaw 自动安装 (默认: Linux 未装时自动 install.sh 安装)
 # 产出: ./boxbench_results_{YYYYMMDD_HHMMSS}.json (stdout 输出路径)
 # =============================================================
-VERSION="1.8"
+VERSION="1.9"
 SPEC_VERSION="1.7"
 OUT="boxbench_results_$(date +%Y%m%d_%H%M%S).json"
 # 运行日志落盘 (过程留痕: 每步时间戳, 供复核/复盘/证明真实执行)
@@ -254,12 +254,59 @@ phase_collect() {
     sleep 4
     IDLE_T1=$(date +%s.%N)
     # C2: 解码速度(短输入,关思考) — tok/s 以 API usage.completion_tokens 为准(引擎统计口径)
-    progress decode running "请求短输入生成，采集真实 usage token 数"
+    # v1.9: 流式 chunk 计时补峰值口径（1s 滑动窗口最大瞬时速度），与 Windows 采集端对齐
+    progress decode running "请求短输入生成（流式），采集 usage + 峰值/均值速度"
     T0=$(date +%s.%N)
-    R1=$(curl -s --max-time 300 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
+    curl -s --max-time 300 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d '{
       "messages":[{"role":"user","content":"请写一段250字左右的短文，介绍人工智能在工业质检中的应用"}],
-      "max_tokens":400,"stream":false,"chat_template_kwargs":{"enable_thinking":false}}')
+      "max_tokens":400,"stream":true,"stream_options":{"include_usage":true},"chat_template_kwargs":{"enable_thinking":false}}' \
+      | python3 -c '
+import sys, json, time
+t0 = time.time()
+ts, content, usage = [], [], None
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("data:"):
+        continue
+    payload = line[5:].strip()
+    if payload == "[DONE]":
+        break
+    try:
+        d = json.loads(payload)
+        if d.get("usage"):
+            usage = d["usage"]
+        choices = d.get("choices") or []
+        delta = (choices[0].get("delta", {}) if choices else {})
+        if delta.get("content"):
+            ts.append(time.time() - t0)
+            content.append(delta["content"])
+    except Exception:
+        pass
+# 瞬时速度: 相邻 content chunk 间推定 1 token（流式解码每 chunk ≈1 token，业界通用口径）,
+# 窗口 1s 平滑抑制抖动; 峰值取窗口最大瞬时值; 均值=(chunk 数-1)/首尾跨度（与 usage 互验）
+peak = mean = None; chunks = len(ts)
+if chunks >= 4:
+    t = [0.0] + ts
+    span = t[-1] - t[0]
+    mean = (chunks - 1) / span if span > 0 else 0
+    pk, i = 0.0, 0
+    for j in range(len(t)):
+        while t[j] - t[i] > 1.0:
+            i += 1
+        w = t[j] - t[i]
+        if w > 0.05 and (j - i) / w > pk:
+            pk = (j - i) / w
+    peak, mean = round(pk, 1), round(mean, 1)
+json.dump({"ts": ts, "content": "".join(content), "peak": peak, "mean": mean, "chunks": chunks, "usage": usage}, open("/dev/stdout","w"))
+' > "$TMPD/c2_stream.json"
     T1=$(date +%s.%N)
+    # usage 优先取流式响应尾帧真实 usage（include_usage），缺失时回退 chunk 计数
+    R1=$(python3 -c "
+import json
+d = json.load(open('$TMPD/c2_stream.json'))
+u = d.get('usage') or {}
+print(json.dumps({'usage': {'prompt_tokens': u.get('prompt_tokens', -1), 'completion_tokens': u.get('completion_tokens', d.get('chunks', -1))}, 'choices':[{'message':{'content': d.get('content','')}}]}))
+" 2>/dev/null || echo '{"usage":{"prompt_tokens":-1,"completion_tokens":-1},"choices":[{"message":{"content":""}}]}')
     echo ",\"c2_short_decode\":{\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),$(echo "$R1" | python3 -c '
 import json,sys
 try:
@@ -267,7 +314,11 @@ try:
     pt=u.get("prompt_tokens",-1); ct=u.get("completion_tokens",-1)
     print("\"prompt_tokens\":%d,\"completion_tokens\":%d"% (pt,ct))
 except Exception:
-    print("\"prompt_tokens\":-1,\"completion_tokens\":-1")'),\"reply_len\":$(echo "$R1" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["choices"][0]["message"].get("content","")))' 2>/dev/null || echo -1),\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
+    print("\"prompt_tokens\":-1,\"completion_tokens\":-1")'),\"reply_len\":$(echo "$R1" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["choices"][0]["message"].get("content","")))' 2>/dev/null || echo -1),$(python3 -c "
+import json
+d = json.load(open('$TMPD/c2_stream.json'))
+print('\"speed_peak_tps\":%s,\"speed_mean_tps\":%s,\"speed_method\":\"流式 chunk 计时；峰值=1s 滑动窗口最大瞬时速度，均值=chunk 跨度均速\",\"speed_chunks\":%s' % (d.get('peak'), d.get('mean'), d.get('chunks')))
+" 2>/dev/null || echo '\"speed_peak_tps\":null,\"speed_mean_tps\":null'),\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
     # C4/C5: 长上下文
     progress decode done "短输入生成采集结束，结果写入原始 JSON"
     progress context running "执行长输入请求，等待模型响应"
@@ -281,9 +332,92 @@ PYEOF
     T1=$(date +%s.%N)
     echo ",\"c4_long_ctx\":{\"wall_s\":$(echo "$T1 $T0" | awk '{printf "%.2f",$1-$2}'),\"ok\":$(python3 -c 'import json; d=json.load(open("'$TMPD'/longr.json")); print(1 if d["choices"][0]["message"]["content"] else 0)' 2>/dev/null || echo -1),\"prompt_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("prompt_tokens",-1))' 2>/dev/null || echo -1),\"completion_tokens\":$(python3 -c 'import json; print(json.load(open("'$TMPD'/longr.json")).get("usage",{}).get("completion_tokens",-1))' 2>/dev/null || echo -1),\"npu\":$(util_summarize "$T0" "$T1" "$UTILF")}"
     echo ",\"idle_baseline\":$(util_summarize "$IDLE_T0" "$IDLE_T1" "$UTILF")"
+    # C5: 长上下文流式分段 (v1.9, 与 Windows 采集端对齐): 首个 content chunk 前=prefill, 其后=decode
+    # 同请求内分段, 服务端 prompt cache 不影响 decode 段; 峰值/均值口径同 C2
+    progress context running "C5 流式分段: prefill/decode 分离实测 (长上下文)"
+    python3 - > "$TMPD/c5_stream_req.json" << 'PYEOF'
+import json
+para = '智能制造通过工业物联网、人工智能、大数据分析和数字孪生技术的深度融合，实现生产过程的自主感知、自主决策和自主执行。智能工厂中设备互联产生海量数据，边缘计算节点负责实时预处理，云端平台承担模型训练与全局优化。机器视觉引入质检环节后缺陷识别准确率大幅提升。预测性维护系统通过振动温度等传感器数据判断设备健康状态，显著压缩非计划停机时间。'
+open('/dev/stdout','w').write(json.dumps({"messages":[{"role":"user","content":para*12+"，请用50字总结核心"}],"max_tokens":120,"stream":True,"stream_options":{"include_usage":True},"chat_template_kwargs":{"enable_thinking":False}}))
+PYEOF
+    T0=$(date +%s.%N)
+    curl -s --max-time 380 "$API/v1/chat/completions" -H 'Content-Type: application/json' -d @"$TMPD/c5_stream_req.json" \
+      | python3 -c '
+import sys, json, time
+t0 = time.time()
+first = last = None
+ts, usage = [], None
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("data:") or line[5:].strip() == "[DONE]":
+        continue
+    try:
+        d = json.loads(line[5:])
+    except Exception:
+        continue
+    if d.get("usage"):
+        usage = d["usage"]
+    ch = (d.get("choices") or [{}])[0]
+    if (ch.get("delta") or {}).get("content"):
+        now = time.time() - t0
+        if first is None:
+            first = now
+        last = now
+        ts.append(now - first)
+json.dump({"ts": ts, "first": first, "last": last, "usage": usage}, open("/dev/stdout","w"))
+' > "$TMPD/c5_stream.json"
+    T1=$(date +%s.%N)
+    echo ",\"c5_ctx_decode\":$(python3 << PYEOF
+import json
+d = json.load(open("$TMPD/c5_stream.json"))
+ts = d.get("ts", []); first = d.get("first"); last = d.get("last")
+usage = d.get("usage") or {}
+ct5 = usage.get("completion_tokens", -1)
+ct5_src = "流式 usage" if ct5 > 0 else "回退 C4 非流式 usage"
+if ct5 < 0:
+    try:
+        ct5 = json.load(open("$TMPD/longr.json")).get("usage", {}).get("completion_tokens", -1)
+    except Exception:
+        pass
+# C2 单路基准速度 → 衰减判定
+try:
+    _c2 = json.load(open("$TMPD/c2_stream.json"))
+    single_tps = _c2["chunks"] / (_c2["ts"][-1]) if _c2.get("ts") else 0
+except Exception:
+    single_tps = 0
+prefill_s = first if first else 0
+decode_s = (last - first) if (first and last and last > first) else 0
+dec_tps = ct5 / decode_s if (ct5 > 0 and decode_s > 0) else 0
+drop5 = ((single_tps - dec_tps) / single_tps * 100) if (single_tps > 0 and dec_tps > 0) else None
+peak = mean = None
+if len(ts) >= 4 and decode_s > 0:
+    t = [0.0] + ts
+    span = t[-1] - t[0]
+    mean = (len(t) - 2) / span if span > 0 else 0
+    pk, i = 0.0, 0
+    for j in range(len(t)):
+        while t[j] - t[i] > 1.0:
+            i += 1
+        w = t[j] - t[i]
+        if w > 0.05 and (j - i) / w > pk:
+            pk = (j - i) / w
+    if mean > 0:
+        peak, mean = round(pk, 1), round(mean, 1)
+import sys as _s
+json.dump({
+  "prefill_s": round(prefill_s, 3), "decode_s": round(decode_s, 3),
+  "decode_tps": round(dec_tps, 1), "completion_tokens": ct5,
+  "speed_peak_tps": peak, "speed_mean_tps": mean,
+  "drop_pct": round(drop5, 1) if drop5 is not None else None,
+  "ok": (1 if drop5 < 20 else 0) if drop5 is not None else None,
+  "method": "流式同请求分段（首 content chunk 前=prefill，其后=decode）；token 源：" + ct5_src + "；服务若有 prompt cache 会影响 prefill 绝对值，不影响 decode 段",
+}, _s.stdout, ensure_ascii=False)
+PYEOF
+)"
+    progress context done "长输入+C5 分段采集结束"
     # C6/C7: 并发能力上探 (v1.8): 单路基准 → 2/4/8/16/32 倍增阶梯, 每档全部成功
     # 且单路耗时较基准衰减 <30% 才继续, 首个失败档的前一档 = 最大无衰减并发 (conc_max)
-    progress context done "长输入请求采集结束；Linux C5 分段计时不在此脚本中实现"
+    progress context done "长输入+C5 分段采集完成"
     progress concurrency running "并发阶梯上探: 单路基准 → 2/4/8/16/32 逐档倍增"
     # 单路基准请求 (与阶梯同规格: 200 max_tokens 生成), 作为衰减判定基准
     T0=$(date +%s.%N)
