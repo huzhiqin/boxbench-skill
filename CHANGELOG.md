@@ -386,3 +386,12 @@ All notable changes to BoxBench Skill will be documented in this file.
 
 ### Changed
 - 发布更新（由 release.sh 自动记录，建议手动补充变更明细）
+
+## [1.10.21] - 2026-11-27
+
+### Added
+- **boxbench.sh (Linux 采集端 v1.9) 补齐与 Windows 端的功能对齐**（此前峰值/均值、C5 分段均为 Windows 独有）：
+  - C2 流式改造：`stream:true + stream_options.include_usage`，逐 chunk 计时 → 峰值(1s 滑窗)/均值双口径；usage 取流式尾帧真实统计（chunk 计数与 usage 互验）
+  - **C5 长上下文流式分段**：同请求内分段（首 content chunk 前=prefill，其后=decode），输出 prefill_s/decode_s/decode_tps/peak/mean/drop_pct，渲染器直接识别出"上下文衰减"章节
+  - E300K 真机验证：C2 峰值 50.6/均值 23.7；C5 prefill 0.74s、decode 60.7 tok/s（长上下文反而更快——prompt cache 生效，MTP 特征）
+- 注：C13 ctxtest 上下文阶梯为 Linux 端独有（Windows 缺，双向差异下次对齐）；runtime_metrics 全程 GPU 采样 Linux 已有 util_overall 等价实现
